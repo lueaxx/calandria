@@ -43,6 +43,11 @@ log = logging.getLogger("calandria.stt")
 
 _SENTINEL = object()
 
+# Send times are kept for this many seconds of audio. Comfortably longer than
+# any real transcription delay, short enough that a stale offset finds nothing.
+_SEND_TIME_WINDOW_S = 60.0
+_SEND_TIME_MEMORY = 900  # entries before pruning is worth the scan
+
 
 class _LiveSession:
     """One websocket to the transcription model."""
@@ -136,6 +141,7 @@ class _LiveSession:
             # system means by a timestamp.
             self.fed_at[round(item.ts_end, 1)] = time.monotonic()
             self.audio_seconds = item.ts_end
+            self._forget_old_send_times()
 
     async def _recv(self, session) -> None:
         try:
@@ -257,6 +263,22 @@ class _LiveSession:
         if sent_at is None:
             return None
         return max((time.monotonic() - sent_at) * 1000, 0.0)
+
+    def _forget_old_send_times(self) -> None:
+        """Keep only recent send times.
+
+        Two reasons, and the second is the one that bites. The map would
+        otherwise grow for the length of a talk; and a stale entry turns a
+        server offset that refers to audio from a minute ago into a reported
+        latency of a minute, which is a measurement of nothing. With few
+        samples that single value becomes the p95 and paints a healthy stage
+        red. A lookup that finds nothing produces no sample at all, which is
+        the honest outcome.
+        """
+        if len(self.fed_at) <= _SEND_TIME_MEMORY:
+            return
+        cutoff = self.audio_seconds - _SEND_TIME_WINDOW_S
+        self.fed_at = {ts: at for ts, at in self.fed_at.items() if ts >= cutoff}
 
     def _fed_at_nearest(self, offset: float) -> float | None:
         """When did we hand over the audio at this position?
