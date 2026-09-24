@@ -1,8 +1,10 @@
-Good morning everyone, and welcome to the opening keynote.
+Good morning everyone, and welcome to the opening keynote of Nerdearla.
 Today we are going to talk about what it actually takes to run open source infrastructure at scale.
 When you deploy a service to Kubernetes, the hard part was never the container.
 The hard part is everything around it: observability, the deployment pipeline, and the on-call rotation at three in the morning.
 Let me show you what our architecture looked like eighteen months ago.
 We had one PostgreSQL database, one monolith, and a great deal of optimism.
-Today we run forty services, and the thing that saved us was not a framework.
+Today we run forty services across three regions, and the thing that saved us was not a framework.
 It was writing down what we expected each service to do, and then measuring whether it did that.
+Our p99 latency went from two thousand milliseconds to under one hundred and fifty.
+The commit that fixed it changed four lines in a connection pool.

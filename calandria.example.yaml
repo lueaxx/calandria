@@ -41,6 +41,7 @@ features:
 glossary: ./glossary.yaml
 
 sessions:
+  # An English talk captioned in English, Spanish and Portuguese.
   - id: keynote
     title: "Main stage - Opening keynote"
     source:
@@ -50,11 +51,13 @@ sessions:
     source_language: en
     targets: [es, pt]
 
-  - id: track-2
-    title: "Track 2 - Observability"
+  # A Spanish talk captioned in Spanish and English. Running both at once is
+  # the two-stage minimum, and it shows translation working in both directions.
+  - id: sala-2
+    title: "Sala 2 - Accesibilidad"
     source:
       type: file
-      path: ./samples/keynote-en.wav
+      path: ./samples/charla-es.wav
       loop: true
-    source_language: en
-    targets: [es]
+    source_language: es
+    targets: [en]

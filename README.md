@@ -30,17 +30,30 @@ docker compose up          →  http://localhost:8080
 - **Tells the production team what is happening** — per-stage latency, errors,
   and a running dollar figure.
 
-Measured on the sample audio in this repository:
+Measured on the sample audio in this repository, which you can reproduce:
 
 | | |
 |---|---|
-| Transcription latency, speech to caption | **p50 520 ms · p95 711 ms** |
+| Transcription latency, speech to caption | **p50 ~600 ms · p95 ~790 ms** |
 | Translation latency, speech to translated caption | ~1.5–2.5 s |
+| Word accuracy, English talk | **92.7%** |
+| Word accuracy, Spanish talk | **95.4%** |
 | Cost, one stage with two extra languages | **USD 0.60 per hour** |
 | Projected cost, 10 stages × 10 hours × 3 languages | **USD ~60** |
 
-Those numbers come from `/dashboard`, which measures them rather than
-estimating them. How, and why that matters, is in
+```bash
+python scripts/measure_accuracy.py
+```
+
+Accuracy is a real measurement rather than an impression, because the samples
+are synthesised from a written script — so the script *is* ground truth, and
+word error rate means something. The glossary is worth about 1.3 points on this
+sample (91.4% → 92.7%, two words in 151); it matters more the more product
+names and speaker names a talk contains. `--no-glossary` reproduces that
+comparison.
+
+Latency comes from `/dashboard`, which measures it rather than estimating it.
+How, and why that distinction matters, is in
 [Measuring latency honestly](#measuring-latency-honestly).
 
 ---
@@ -352,11 +365,20 @@ means the pipeline is testable end to end without credentials or spend.
 
 ## Sample audio
 
-`samples/` holds short clips with matching ground-truth transcripts, so you can
-measure accuracy rather than squint at it. To caption a real talk instead:
+`samples/` holds an English talk and a Spanish one, each with the script it was
+read from. They are **synthesised, not borrowed** — a conference recording is
+rarely licensed in a way that allows redistributing it inside an Apache-2.0
+repository, and a sample file that quietly creates a licensing problem for
+everyone who forks the project is a bad sample file.
+
+Synthesising also buys something a borrowed recording cannot: the transcript is
+ground truth, so accuracy is measurable. Regenerate them with
+`python scripts/make_samples.py`.
+
+To caption a real talk instead:
 
 ```bash
-./scripts/fetch-talk.sh "https://www.youtube.com/watch?v=..." samples/talk.wav
+./scripts/fetch-talk.sh "https://www.youtube.com/watch?v=..." samples/talk.wav 120 300
 ```
 
 ---

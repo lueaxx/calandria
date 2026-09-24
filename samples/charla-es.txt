@@ -1,0 +1,8 @@
+Buenos días, y gracias por venir a esta charla en Nerdearla.
+Vamos a hablar de accesibilidad en eventos técnicos, que es un tema del que se habla poco.
+La transcripción en vivo no es una función extra, es la diferencia entre poder seguir una charla o no poder.
+En nuestra conferencia tenemos más de treinta sesiones en inglés, muchas en simultáneo.
+Las herramientas comerciales funcionan, pero son caras y dependen de operación manual.
+Por eso decidimos construir una solución abierta que cualquier conferencia pueda desplegar.
+El código está en GitHub con licencia Apache dos punto cero.
+Se levanta con un solo comando y corre diez escenarios en paralelo.
