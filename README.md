@@ -274,6 +274,7 @@ Verified by forcing an 18-second rotation interval across a 59-second talk:
 |---|---|
 | rotations | 2 |
 | errors | 0 |
+| audio dropped | 0 |
 | backward timestamps | 0 |
 | duplicated word runs | 0 |
 | of the reference transcript captured | **97%** |
@@ -342,6 +343,7 @@ Notable knobs:
 | `stt.rotate_after_seconds` | `480` | must stay under the API's 600 s session cap |
 | `stt.language_hint` | `true` | materially faster lock-on than auto-detect |
 | `stt.commit_sentences` | `true` | translate per sentence instead of per pause |
+| `source.loop` | `false` | replay a file forever; each pass starts a fresh session |
 | `stt.fallback_enabled` | `true` | degrade rather than go silent |
 | `translation.retry_budget_seconds` | `6` | how long a rate-limited line is worth retrying |
 | `translation.context_segments` | `3` | previous lines sent for continuity |

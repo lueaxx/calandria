@@ -220,8 +220,12 @@ class SessionWorker:
             async for chunk in self._source.frames():
                 self._count_audio(chunk.ts_end - chunk.ts_start)
                 if self._audio_q.full():
+                    # Dropping audio means the transcriber is not keeping up,
+                    # and every dropped chunk is speech nobody will read. It is
+                    # counted rather than swallowed so the dashboard can say so.
                     with contextlib.suppress(asyncio.QueueEmpty):
                         self._audio_q.get_nowait()
+                        self.status.dropped_audio += 1
                 self._audio_q.put_nowait(chunk)
         finally:
             with contextlib.suppress(asyncio.QueueFull):

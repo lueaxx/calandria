@@ -7,6 +7,7 @@ runs here, deterministically and for free.
 """
 
 import asyncio
+import shutil
 
 import pytest
 
@@ -172,3 +173,33 @@ async def test_the_audio_queue_drops_old_frames_rather_than_stalling(tmp_path):
     w._source = ScriptedAudio(120)      # far more audio than the queue holds
     await w._pump_audio()               # nothing consuming it
     assert w._audio_q.qsize() <= w._audio_q.maxsize
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None,
+                    reason="needs ffmpeg, which decodes every real audio source")
+async def test_a_looping_file_marks_where_it_starts_over():
+    """A demo that loops its sample must not go silent on the second pass.
+
+    The audience is not the same audience -- whoever just sat down has heard
+    none of it -- so the loop boundary has to reach the layer that suppresses
+    repeats.
+    """
+    import wave
+    from calandria.audio.ffmpeg_source import file_source
+
+    path = "samples/charla-es.wav"
+    with wave.open(path, "rb") as w:
+        duration = w.getnframes() / w.getframerate()
+
+    source = file_source(path, chunk_ms=100, loop=True)
+    marks, elapsed = [], 0.0
+    async for chunk in source.frames():
+        if chunk.starts_new_stream:
+            marks.append(chunk.ts_start)
+        elapsed = chunk.ts_end
+        if elapsed > duration + 1.5:
+            break
+    await source.stop()
+
+    assert marks, "a looping source never signalled that it started over"
+    assert abs(marks[0] - duration) < 1.0, f"loop marked at {marks[0]:.1f}s, file is {duration:.1f}s"

@@ -85,6 +85,11 @@ class _LiveSession:
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="live-session")
 
+    def forget_shown(self) -> None:
+        """Treat what follows as speech the audience has not heard."""
+        if self._committer is not None:
+            self._committer.forget_history()
+
     def feed(self, chunk: AudioChunk) -> None:
         if self.inq.full():          # the model is behind; newest audio wins
             with contextlib.suppress(asyncio.QueueEmpty):
@@ -344,6 +349,23 @@ class GeminiLiveBackend:
 
         try:
             async for chunk in frames:
+                if chunk.starts_new_stream:
+                    # The source started over. Clearing what was shown is not
+                    # enough on its own: the model's session continues across
+                    # the boundary and its hypothesis still carries the previous
+                    # pass, which would then be released as one enormous line.
+                    # A new pass is a new talk, so it gets a new session --
+                    # without the overlap a rotation uses, because there is no
+                    # seam to repair here.
+                    log.info("source restarted; beginning a fresh session")
+                    await primary.aclose()
+                    if secondary is not None:
+                        await secondary.aclose()
+                        secondary = None
+                        rotation_started_at = None
+                    primary = self._new_session()
+                    session_started_ts = chunk.ts_start
+                    last_final_tail = ""
                 primary.feed(chunk)
                 if secondary is not None:
                     secondary.feed(chunk)

@@ -75,8 +75,11 @@ class FFmpegSource:
         size = chunk_bytes(self.chunk_ms)
         emitted = 0.0
         started = time.monotonic()
+        pass_number = 0
 
         while not self._stopped:
+            pass_number += 1
+            first_of_pass = True
             self._proc = await asyncio.create_subprocess_exec(
                 *self._args(),
                 stdout=asyncio.subprocess.PIPE,
@@ -88,7 +91,11 @@ class FFmpegSource:
                 if not data:
                     break
                 dur = bytes_to_seconds(len(data))
-                yield AudioChunk(data=data, ts_start=emitted, ts_end=emitted + dur)
+                yield AudioChunk(
+                    data=data, ts_start=emitted, ts_end=emitted + dur,
+                    starts_new_stream=first_of_pass and pass_number > 1,
+                )
+                first_of_pass = False
                 emitted += dur
 
                 if self.realtime:

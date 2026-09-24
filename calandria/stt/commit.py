@@ -115,6 +115,11 @@ class SentenceCommitter:
     def reset(self) -> None:
         self._released = []
 
+    def forget_history(self) -> None:
+        """Forget what was shown, for when the audio genuinely starts over."""
+        self._released = []
+        self._history = []
+
     @property
     def released_words(self) -> int:
         return len(self._released)

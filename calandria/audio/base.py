@@ -33,6 +33,11 @@ class AudioChunk:
     data: bytes
     ts_start: float  # seconds into this session's audio
     ts_end: float
+    # True on the first chunk after a looping file starts over. A loop boundary
+    # is new speech as far as the audience is concerned -- whoever just sat down
+    # has not heard any of it -- so anything downstream that suppresses repeats
+    # needs to forget what it has seen.
+    starts_new_stream: bool = False
 
 
 @runtime_checkable

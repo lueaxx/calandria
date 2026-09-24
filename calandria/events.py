@@ -77,6 +77,7 @@ class SessionStatus:
     captions_final: int = 0
     rotations: int = 0
     reconnects: int = 0
+    dropped_audio: int = 0
     errors: int = 0
     last_error: str | None = None
     backend: str = "gemini-live"
@@ -96,6 +97,7 @@ class SessionStatus:
             "captions_final": self.captions_final,
             "rotations": self.rotations,
             "reconnects": self.reconnects,
+            "dropped_audio": self.dropped_audio,
             "errors": self.errors,
             "last_error": self.last_error,
             "backend": self.backend,
