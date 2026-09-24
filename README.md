@@ -225,6 +225,33 @@ reaches a full stop. `calandria/stt/commit.py`, and the property test in
 `tests/test_commit.py` that streams a talk word by word and asserts every word
 is delivered exactly once.
 
+### Showing each sentence exactly once
+
+Deciding what to release turned out to be the hardest part of this project, and
+the reason is worth stating: the model's hypothesis stream and its own finalised
+segments are two views of the same speech that do not stay in step. The
+hypothesis restates the utterance from its beginning on every update; a final
+arrives for a segment that may already have been shown sentence by sentence; and
+when a stream closes the model replays the whole segment, sometimes reworded.
+
+Four implementations failed here, each on a different real input: sentences
+released twice, utterances released *in full* on every update (137 captions
+averaging 136 words), closing restatements slipping through. The mistake common
+to all of them was keeping one piece of state for two questions. There are two:
+
+- **Where to cut this utterance.** Answered by the words released so far, with
+  an exact prefix comparison. Exact, because it can be — an utterance is a few
+  thousand words at most, and bounding that memory was what forced the earlier
+  versions into heuristics.
+- **Has the audience read this before?** Answered by a short rolling history
+  that survives utterance boundaries, because the interims between two repeated
+  closing finals clear the cut point just before the second repeat needs it.
+
+Exact matching handles the general case. One similarity threshold, applied only
+to blocks of 25 words or more, covers the closing restatement that comes back
+with a word changed. `calandria/stt/commit.py`, and 30 tests that each name the
+input they came from.
+
 ### The ten-minute problem
 
 A Gemini live transcription session ends after ten minutes. Conference talks do
@@ -240,6 +267,23 @@ The matching is on normalised words and requires at least a two-word overlap
 before it cuts anything, because the two sessions punctuate the same audio
 differently. Showing a repeated word is a blemish; silently deleting a sentence
 the speaker said is a failure of the thing being built.
+
+Verified by forcing an 18-second rotation interval across a 59-second talk:
+
+| | |
+|---|---|
+| rotations | 2 |
+| errors | 0 |
+| backward timestamps | 0 |
+| duplicated word runs | 0 |
+| of the reference transcript captured | **97%** |
+| latency p50 | 705 ms |
+
+Every one of those columns started out wrong. The server's audio offsets are
+relative to the *session*, so after the first rotation its clock restarts while
+the talk does not — which desynchronises exported subtitles and, once again,
+corrupted the latency figure. Each fix is in the commit history with the
+measurement that caught it.
 
 ### It degrades instead of going dark
 

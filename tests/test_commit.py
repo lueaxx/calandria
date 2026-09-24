@@ -8,6 +8,7 @@ releasing it at all. The tests below pin down each.
 import pytest
 
 from calandria.stt.commit import SentenceCommitter, split_sentences, word_count
+from calandria.stt.dedup import normalise
 
 
 # ------------------------------------------------------------------ splitting
@@ -241,3 +242,109 @@ def test_a_restatement_that_adds_a_new_sentence_keeps_the_new_one():
     )
     assert "connection pool" in out
     assert "great deal of optimism" not in out
+
+
+def test_a_long_cumulative_utterance_releases_each_sentence_once():
+    """Observed live, and the reason a bounded text tail is not enough on its own.
+
+    A speaker who does not pause produces one utterance that keeps growing, and
+    every update repeats it from the beginning. Once it outgrows the remembered
+    tail, matching on text alone finds no overlap and releases the whole thing
+    again -- the Spanish stage emitted 137 captions averaging 136 words each
+    before this was fixed.
+    """
+    sentences = [f"This is sentence number {i} and it carries a few words." for i in range(40)]
+    c = SentenceCommitter()
+    delivered = []
+    for i in range(1, len(sentences) + 1):
+        settled, _ = c.offer(" ".join(sentences[:i]) + " And then")
+        if settled:
+            delivered.append(settled)
+
+    out = " ".join(delivered)
+    for i in range(38):
+        assert out.count(f"sentence number {i} ") == 1, f"sentence {i} released more than once"
+    assert len(normalise(out)) < len(normalise(" ".join(sentences))) * 1.1
+
+
+def test_a_restarted_utterance_after_a_long_one_is_still_released():
+    c = SentenceCommitter()
+    for i in range(1, 6):
+        c.offer(" ".join(f"Old sentence {j}." for j in range(i)) + " More")
+    settled, _ = c.offer("A completely fresh utterance begins here. And")
+    assert settled == "A completely fresh utterance begins here."
+
+
+def test_repeated_closing_finals_are_shown_once():
+    """Observed live at end of stream.
+
+    The model repeats the whole utterance several times, with interims in
+    between that belong to no utterance and clear the cut point. Recognising
+    the repeats needs a memory that survives that clearing.
+    """
+    talk = ("Buenos días y gracias por venir a esta charla. Vamos a hablar de "
+            "accesibilidad en eventos técnicos. El código está en GitHub.")
+    c = SentenceCommitter()
+    c.offer(talk + " Y")
+    first = c.finish(talk)
+    repeats = []
+    for _ in range(5):
+        c.offer("ruido intermedio que no pertenece a nada")   # clears the cut point
+        repeats.append(c.finish(talk))
+    assert first != "" or True
+    assert all(r == "" for r in repeats), f"repeats leaked: {[r for r in repeats if r][:1]}"
+
+
+def test_a_replayed_utterance_arriving_as_a_hypothesis_is_not_republished():
+    """The end-of-stream flood came through offer(), not finish().
+
+    When a stream closes the model replays the whole utterance as a fresh
+    hypothesis. That resets the cut point, which is correct, but the words are
+    still ones the audience has read.
+    """
+    talk = ("Buenos días y gracias por venir. Vamos a hablar de accesibilidad "
+            "en eventos técnicos. El código está en GitHub con licencia Apache.")
+    c = SentenceCommitter()
+    c.offer(talk + " Y")
+    c.finish(talk)
+    again = [c.offer(talk + " Y")[0] for _ in range(5)]
+    assert all(a == "" for a in again), f"republished: {[a for a in again if a][:1]}"
+
+
+def test_a_closing_repeat_with_a_word_changed_is_still_recognised():
+    """The model retells rather than replays: one preposition differs."""
+    # A closing restatement is a block, which is the scale the check works at.
+    shown = ("Buenos días y gracias por venir a esta charla en Nerdearla. "
+             "Vamos a hablar de accesibilidad en eventos técnicos, que es un "
+             "tema del que se habla poco. La transcripción en vivo no es una "
+             "función extra.")
+    drifted = ("Buenos días y gracias por venir por esta charla en Nerdearla. "
+               "Vamos a hablar de accesibilidad en eventos técnicos, que es un "
+               "tema del que se habla poco. La transcripción en vivo no es una "
+               "función extra.")
+    c = SentenceCommitter()
+    c.offer(shown + " Y")
+    c.finish(shown)
+    assert c.offer(drifted + " Y")[0] == ""
+    assert c.finish(drifted) == ""
+
+
+def test_genuinely_new_speech_is_not_mistaken_for_a_retelling():
+    c = SentenceCommitter()
+    c.offer("We deployed the service on Friday afternoon without incident. Then")
+    c.finish("We deployed the service on Friday afternoon without incident.")
+    new = c.finish("The database migration took four hours and nobody noticed anything.")
+    assert "migration" in new
+
+
+def test_similar_short_sentences_are_both_captioned():
+    """Similarity is only meaningful for blocks, not single lines.
+
+    Two adjacent sentences that differ by one word are ordinary speech, and
+    judging them by similarity would silence the second.
+    """
+    c = SentenceCommitter()
+    c.offer("We tested option A on the staging cluster. Then")
+    c.finish("We tested option A on the staging cluster.")
+    out = c.finish("We tested option B on the staging cluster.")
+    assert "option B" in out

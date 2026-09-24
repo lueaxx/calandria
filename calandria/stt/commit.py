@@ -26,8 +26,9 @@ not be held hostage to a speaker who never reaches a full stop.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
-from .dedup import dedup_overlap, normalise
+from .dedup import dedup_overlap, drop_leading_words, normalise
 
 # Terminal punctuation, including the inverted marks Spanish opens with -- which
 # must not be treated as the *end* of anything.
@@ -35,14 +36,22 @@ _SENTENCE = re.compile(r"[^.!?…]+[.!?…]+[\"')\]]*\s*|[^.!?…]+$", re.UNICOD
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 DEFAULT_MAX_WORDS = 30
-# Words of shown text kept for overlap matching. Comfortably longer than any
-# single revision, far shorter than a talk.
-_MEMORY_WORDS = 120
-# A line is treated as a retelling when this share of its word runs has already
-# been shown. Set high enough that a speaker genuinely repeating themselves for
-# emphasis still gets captioned.
-_RESTATEMENT_N = 4
-_RESTATEMENT_RATIO = 0.6
+# A ceiling on one utterance, far past anything a person says without a
+# detectable pause. Reaching it means something is wrong, not that a sentence
+# is long.
+_MAX_UTTERANCE_WORDS = 8000
+# Below this a repeated run is a speaker making a point, not the model
+# retelling a segment.
+_MIN_RESTATEMENT_WORDS = 8
+# How much recently shown text is kept for spotting a retelling. Long enough to
+# cover the segment a closing final repeats, short enough that a speaker
+# returning to a theme minutes later is still captioned.
+_HISTORY_WORDS = 400
+# How much of a line must align with recently shown text to count as a
+# retelling rather than new speech.
+_RESTATEMENT_SIMILARITY = 0.85
+# Below this a line is judged only by exact match; see _already_shown.
+_SIMILARITY_MIN_WORDS = 25
 
 
 def split_sentences(text: str) -> list[str]:
@@ -54,84 +63,67 @@ def word_count(text: str) -> int:
     return len(normalise(text))
 
 
-def _words(text: str) -> list[str]:
-    # The same normalisation the rotation seam uses, so both comparisons agree
-    # about what counts as the same word.
-    return normalise(text)
-
-
-def _ngrams(words: list[str], n: int) -> set[str]:
-    return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
-
 
 class SentenceCommitter:
-    """Tracks what the audience has already read, and decides what to add.
+    """Tracks what the audience has already read of the current utterance.
 
-    State here is the released *text*, not a count of released sentences. A
-    count assumes the hypothesis stream and the model's own finals stay in step,
-    and they do not: after a final arrives, the next hypothesis sometimes still
-    carries the sentence that was just finalised. A counter reset to zero then
-    releases that sentence a second time, and the audience reads it twice.
+    The model's running hypothesis always restates the utterance from its
+    beginning, so the question at every update is simply: how much of this have
+    they seen? That is answered by keeping the words already released and
+    checking whether the new hypothesis starts with them.
 
-    Matching on text needs no such assumption. If a hypothesis begins with what
-    has already been shown, it continues the same stream and only the remainder
-    is new. If it does not, the model has started over and so do we. Nothing has
-    to predict when that happens.
+    The check is an exact prefix comparison, which is the whole point. An
+    earlier version kept only a bounded tail to save memory, which made exact
+    comparison impossible and forced a pile of heuristics -- suffix matching,
+    n-gram overlap ratios -- each of which failed on a different real input:
+    utterances released twice, utterances released in full on every update,
+    closing restatements slipping through. An utterance is at most a few
+    thousand words. Keeping all of them costs nothing and needs no thresholds.
+
+    When a hypothesis does not start with what was released, it belongs to a
+    different utterance and the slate is cleared. Nothing has to predict when
+    the model decides to start over.
     """
 
     def __init__(self, max_words: int = DEFAULT_MAX_WORDS) -> None:
         self.max_words = max_words
-        self._released: list[str] = []   # normalised words already sent onward
+        # Where to cut the current utterance. Cleared when the model starts a
+        # new one, because the cut point is meaningless across utterances.
+        self._released: list[str] = []
+        # What the audience has read lately, regardless of which utterance it
+        # came from. This must outlive `_released`: when a stream closes the
+        # model repeats the whole utterance several times with interims in
+        # between, and those interims clear `_released` just before the next
+        # repeat needs it.
+        self._history: list[str] = []
 
     def reset(self) -> None:
         self._released = []
-
-    def _remember(self, text: str) -> None:
-        """Keep a bounded tail of what has been shown, for overlap matching.
-
-        Only the recent tail can plausibly overlap with what arrives next, and
-        an unbounded list would grow for the length of a talk.
-        """
-        self._released.extend(_words(text))
-        if len(self._released) > _MEMORY_WORDS:
-            self._released = self._released[-_MEMORY_WORDS:]
 
     @property
     def released_words(self) -> int:
         return len(self._released)
 
-    def _is_restatement(self, text: str) -> bool:
-        """Whether this is mostly a retelling of what the audience just read.
+    def _covered(self, flat: list[str]) -> int:
+        """How many leading words of `flat` have already been shown.
 
-        Trimming works by prefix, so it cannot catch a line that restates
-        shown text with a few words in front of it -- and the model does
-        exactly that when a stream closes, summarising the tail of the segment
-        it was working on. Comparing short word runs instead of prefixes
-        recognises the restatement wherever it starts.
+        A question, not a command: it never clears state. Clearing belongs to
+        `offer`, which knows it is looking at a new utterance -- `finish` asks
+        the same question and still needs the old words afterwards to recognise
+        a restatement.
         """
-        candidate = _ngrams(_words(text), _RESTATEMENT_N)
-        if len(candidate) < _RESTATEMENT_N:
-            return False                 # too short to judge; let it through
-        seen = _ngrams(self._released, _RESTATEMENT_N)
-        if not seen:
-            return False
-        overlap = sum(1 for g in candidate if g in seen) / len(candidate)
-        return overlap >= _RESTATEMENT_RATIO
+        n = len(self._released)
+        if n and len(flat) >= n and flat[:n] == self._released:
+            return n
+        return 0
 
-    def _trim(self, text: str) -> str:
-        """Remove from `text` whatever the audience has already read.
-
-        Matching is on words rather than sentences because the model revises
-        its own punctuation: a clause released as its own sentence often comes
-        back folded into a longer one. Comparing sentence to sentence misses
-        that and shows the clause twice.
-
-        This is the same operation as repairing the seam between two live
-        sessions during a rotation, so it is the same tested function.
-        """
-        if not self._released:
-            return text
-        return dedup_overlap(" ".join(self._released), text)
+    def _remember(self, words: list[str]) -> None:
+        self._history = (self._history + words)[-_HISTORY_WORDS:]
+        self._released.extend(words)
+        if len(self._released) > _MAX_UTTERANCE_WORDS:
+            # Far past any real utterance; treat it as a fresh one rather than
+            # grow without bound.
+            self._released = self._released[-_MAX_UTTERANCE_WORDS:]
 
     def offer(self, hypothesis: str) -> tuple[str, str]:
         """Take the running hypothesis; return (newly settled, still provisional).
@@ -146,40 +138,133 @@ class SentenceCommitter:
         if not sentences:
             return "", ""
 
+        flat = normalise(hypothesis)
+        covered = self._covered(flat)
+        if not covered and self._released:
+            self.reset()                 # this hypothesis is a new utterance
+
+        first_new, consumed = 0, 0
+        for i, sentence in enumerate(sentences):
+            consumed += len(normalise(sentence))
+            if consumed <= covered:
+                first_new = i + 1
+            else:
+                break
+
         settled_upto = len(sentences) - 1        # hold the trailing fragment
         tail = sentences[-1]
-
-        if settled_upto == 0 and word_count(tail) > self.max_words:
+        if settled_upto <= first_new and word_count(tail) > self.max_words:
             settled_upto = len(sentences)        # a run-on; release it anyway
             tail = ""
 
-        candidate = " ".join(sentences[:settled_upto])
-        new = self._trim(candidate)
-        if not new.strip():
-            return "", self._trim(tail) if self._released else tail
+        if settled_upto <= first_new:
+            return "", tail
 
-        self._remember(new)
+        new = " ".join(sentences[first_new:settled_upto])
+        # The cut point says where this utterance was left off; it says nothing
+        # about whether the audience has read these words before. At the end of
+        # a stream the model replays the whole utterance as a fresh hypothesis,
+        # which resets the cut point and would otherwise republish all of it.
+        if self._already_shown(normalise(new)):
+            return "", tail
+        self._remember(normalise(new))
         return new, tail
+
+    def _trim_reworded(self, text: str) -> str:
+        """Trim a final that restates shown text without repeating it verbatim.
+
+        When a stream closes the model tends to retell the tail of the segment,
+        and often puts a few words of its own in front -- "This is across three
+        regions..." where the audience already read "across three regions...".
+        A prefix comparison cannot see past that framing, so try skipping a word
+        or two before giving up. Bounded deliberately: past three words this is
+        no longer the same sentence being restated.
+        """
+        shown = " ".join(self._released)
+        trimmed = dedup_overlap(shown, text)
+        if trimmed != text:
+            return trimmed
+        for skip in (0, 1, 2, 3):
+            candidate = drop_leading_words(text, skip) if skip else text
+            if not candidate:
+                break
+            if self._already_shown(normalise(candidate)):
+                return ""
+            if skip:
+                trimmed = dedup_overlap(shown, candidate)
+                if trimmed != candidate:
+                    return trimmed
+        return text
+
+    def _already_shown(self, words: list[str]) -> bool:
+        """Is this exact run of words sitting somewhere in what was shown?
+
+        A seam answers "where does this join on"; this answers "have they read
+        this before". They are different questions, and a closing restatement
+        needs the second one -- it retells from the middle of what was shown,
+        not from the end, so no seam exists to find.
+
+        Contiguous and exact, so a speaker who genuinely repeats a short phrase
+        for emphasis is not silenced; only a run long enough to be a retelling
+        counts.
+        """
+        n = len(words)
+        if n < _MIN_RESTATEMENT_WORDS or not self._history:
+            return False
+
+        # Exact first: cheap, and covers a verbatim replay.
+        if n <= len(self._history) and any(
+            self._history[i:i + n] == words
+            for i in range(len(self._history) - n + 1)
+        ):
+            return True
+
+        # A retelling is rarely word-perfect -- "gracias por venir a esta
+        # charla" comes back as "gracias por venir por esta charla" -- so an
+        # exact comparison alone lets the closing repeat through.
+        #
+        # Only whole blocks are judged this way. The thing being caught is a
+        # segment replayed at the end of a stream, which runs to dozens of
+        # words; at the scale of one sentence, two genuinely different lines
+        # ("we tested option A", "we tested option B") are similar enough to
+        # trip any useful threshold, and suppressing those would silence real
+        # speech.
+        if n < _SIMILARITY_MIN_WORDS:
+            return False
+        matcher = SequenceMatcher(None, self._history, words, autojunk=False)
+        matched = sum(block.size for block in matcher.get_matching_blocks())
+        return matched / n >= _RESTATEMENT_SIMILARITY
 
     def finish(self, final_text: str) -> str:
         """The model's own final arrived; return only what has not been shown.
 
         The final is authoritative and usually tidier than the hypotheses that
-        preceded it, but the audience has already read most of it.
+        preceded it, but the audience has read most of it already. When it
+        matches what was released word for word, the remainder is exact. When
+        the model has reworded it, fall back to trimming the overlap.
+
+        The released words are kept rather than cleared, because the next
+        hypothesis sometimes still carries this utterance -- and if it carries a
+        different one, the prefix check notices and clears them anyway.
         """
         sentences = split_sentences(final_text)
         if not sentences:
             return ""
-        trimmed = self._trim(" ".join(sentences))
-        if not trimmed.strip():
-            return ""
 
-        # Judge each sentence on its own. A closing final often retells several
-        # sentences and adds one; discarding the whole block because most of it
-        # is old would throw away the part that is not.
-        kept = [s for s in split_sentences(trimmed) if not self._is_restatement(s)]
-        if not kept:
+        flat = normalise(final_text)
+        covered = self._covered(flat)
+
+        if covered >= len(flat):
             return ""
-        out = " ".join(kept)
-        self._remember(out)
-        return out
+        if covered:
+            # Cut at the word, not at the sentence. The model routinely refolds
+            # a clause that was released as its own sentence into a longer one,
+            # and cutting on sentence boundaries would show that clause twice.
+            new = drop_leading_words(final_text, covered)
+        else:
+            new = self._trim_reworded(final_text)
+
+        if not new.strip():
+            return ""
+        self._remember(normalise(new))
+        return new

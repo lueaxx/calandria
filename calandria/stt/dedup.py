@@ -67,10 +67,10 @@ def dedup_overlap(previous_tail: str, new_text: str) -> str:
     if overlap == len(new_words):
         return ""
 
-    return _drop_leading_words(new_text, overlap)
+    return drop_leading_words(new_text, overlap)
 
 
-def _drop_leading_words(text: str, count: int) -> str:
+def drop_leading_words(text: str, count: int) -> str:
     """Remove the first `count` words from `text`, keeping the original spelling
     and punctuation of everything that survives."""
     matches = list(_WORD.finditer(text))
