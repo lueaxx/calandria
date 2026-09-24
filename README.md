@@ -84,9 +84,16 @@ Then open:
 
 ## Then run it for real
 
-1. Get a key at <https://aistudio.google.com/apikey>. The free tier works for a
-   first look; two concurrent live sessions want a billing account attached,
-   which upgrades you to Tier 1 instantly.
+1. Get a key at <https://aistudio.google.com/apikey>, then **attach a billing
+   account** to it. This is not optional for a real event, and the reason is
+   specific: the free tier allows 15 translation requests per minute across the
+   whole project, and Calandria translates each sentence as the speaker
+   finishes it. One stage in two languages exceeds that on its own.
+
+   Symptom if you skip it: original-language captions look perfect and
+   translations arrive with gaps. The dashboard counts the errors and the log
+   says `429 RESOURCE_EXHAUSTED`. Attaching billing moves you to Tier 1
+   instantly and the problem disappears.
 
    > **Heads up on credits.** Since 2 March 2026, Gemini API usage through AI
    > Studio is excluded from the USD 300 Google Cloud free trial. Those credits
@@ -195,6 +202,29 @@ Someone who understands the speaker reads along in well under a second. Someone
 reading the translation is about two seconds behind — better than a human
 interpreter, who typically runs three to six seconds back.
 
+### Translation cannot wait for the speaker to breathe
+
+The transcription model finalises a segment when it detects end of speech, and
+translation runs on finalised text. That couples the translated captions to
+something Calandria does not control: how often the speaker pauses.
+
+Measured on a real talk, finalised segments arrived **15 to 20 seconds apart**.
+On continuous speech they did not arrive at all until the stream closed — one
+segment containing the entire talk. Tuning the voice detector does not help;
+every silence threshold and sensitivity setting produced byte-identical results.
+
+So Calandria commits sentences itself. When the running hypothesis contains a
+completed sentence *followed by more text*, the model has moved past that
+sentence and is no longer revising it, so it can be treated as settled and sent
+to be translated. The wait drops from tens of seconds to about two.
+
+The trailing fragment is never committed on sentence grounds — it is the part
+still being revised. A run-on with no punctuation is released on word count
+instead, because a reader should not be held hostage to a speaker who never
+reaches a full stop. `calandria/stt/commit.py`, and the property test in
+`tests/test_commit.py` that streams a talk word by word and asserts every word
+is delivered exactly once.
+
 ### The ten-minute problem
 
 A Gemini live transcription session ends after ten minutes. Conference talks do
@@ -267,7 +297,9 @@ Notable knobs:
 | `stt.mode` | `SMART` | removes filler words; `VERBATIM` keeps them |
 | `stt.rotate_after_seconds` | `480` | must stay under the API's 600 s session cap |
 | `stt.language_hint` | `true` | materially faster lock-on than auto-detect |
+| `stt.commit_sentences` | `true` | translate per sentence instead of per pause |
 | `stt.fallback_enabled` | `true` | degrade rather than go silent |
+| `translation.retry_budget_seconds` | `6` | how long a rate-limited line is worth retrying |
 | `translation.context_segments` | `3` | previous lines sent for continuity |
 | `features.*` | all on | every feature can be switched off |
 | `features.catchup_buffer` | `200` | lines a late joiner can scroll back through |
@@ -324,15 +356,25 @@ milliseconds, and it tells the audience nothing about how far behind the speaker
 they are reading.
 
 Calandria reports the only number that describes the audience's experience:
-**the wall-clock time between the audio containing a word being handed to the
-model, and the caption containing that word existing.**
+**the wall-clock time between audio being handed to the model and the caption
+for it existing.** It is measured against the server's own `audio_offset`
+markers, which say where in the talk a thing happened, cross-referenced with
+when Calandria fed that exact position.
 
-Getting this right required care. The API reports where speech ended on a
-`voice_activity` event that arrives *after* the transcript it belongs to, so
-timing a caption against the most recent marker measures the length of the
-sentence instead of the delay. During development that bug reported a confident
-**14 020 ms** where the real figure was **520 ms**. Finals are now held until
-their own end-of-speech marker arrives (`calandria/stt/gemini.py`).
+Getting this right required care, twice.
+
+The end-of-speech marker arrives *after* the transcript it belongs to, so timing
+a caption against the most recent marker measures the length of the sentence
+instead of the delay. That bug reported a confident **14 020 ms** where the real
+figure was **520 ms**. Finals are now held until their own marker arrives.
+
+The second problem was that the marker only exists when the speaker pauses. A
+stage whose speaker talks straight through produced captions and no
+measurements, so a healthy stage was indistinguishable from a stalled one on the
+dashboard. Time-to-first-caption is now sampled at the *start* of each speech
+burst as well, which is well defined for every stage.
+
+Both live in `calandria/stt/gemini.py`.
 
 ---
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 
 from google import genai
@@ -138,21 +139,62 @@ class TranslationFanout:
     the backlog gets silly.
     """
 
-    def __init__(self, translators: dict[str, GeminiTranslator], max_concurrent: int = 4):
+    def __init__(self, translators: dict[str, GeminiTranslator],
+                 max_concurrent: int = 4, retry_budget_seconds: float = 6.0):
         self._translators = translators
         self._sem = asyncio.Semaphore(max_concurrent)
+        self._retry_budget = retry_budget_seconds
 
     @property
     def languages(self) -> list[str]:
         return list(self._translators)
 
     async def translate(self, lang: str, text: str) -> str:
-        async with self._sem:
-            try:
-                return await self._translators[lang].translate(text)
-            except Exception as exc:
-                # One failed line must not end the talk. Report it and move on;
-                # the dashboard counts it and the original-language captions
-                # keep flowing regardless.
-                log.warning("translation to %s failed: %s", lang, exc)
-                raise
+        """Translate one line, retrying while the result would still be useful.
+
+        Rate limits and capacity blips are transient by definition -- the API
+        even reports how long to wait -- so dropping a line on the first 429 is
+        the wrong call. Retrying indefinitely is equally wrong: a subtitle that
+        lands forty seconds late is not a subtitle, it is a line of text that
+        contradicts what the speaker is now saying.
+
+        So the budget is a deadline rather than an attempt count. Keep trying
+        while the line is still worth showing, then let it go and let the
+        original-language captions carry the talk.
+        """
+        deadline = time.monotonic() + self._retry_budget
+        delay = 0.4
+        last: Exception | None = None
+
+        while True:
+            async with self._sem:
+                try:
+                    return await self._translators[lang].translate(text)
+                except Exception as exc:
+                    last = exc
+                    if not _is_transient(exc) or time.monotonic() + delay > deadline:
+                        break
+                    log.debug("translation to %s hit a transient error, retrying "
+                              "in %.1fs: %s", lang, delay, exc)
+            await asyncio.sleep(delay)
+            delay *= 2
+
+        log.warning("translation to %s failed: %s", lang, last)
+        raise last
+
+
+TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Whether retrying this could plausibly succeed.
+
+    A quota or capacity error clears on its own. A malformed request or a bad
+    key does not, and retrying it just burns the deadline that a recoverable
+    error would have used.
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in TRANSIENT_STATUSES:
+        return True
+    text = str(exc)
+    return any(str(s) in text for s in TRANSIENT_STATUSES) or "UNAVAILABLE" in text

@@ -164,7 +164,8 @@ class SessionWorker:
             )
             for lang in self.cfg.targets
         }
-        return TranslationFanout(translators, self.app.translation.max_concurrent)
+        return TranslationFanout(translators, self.app.translation.max_concurrent,
+                                 self.app.translation.retry_budget_seconds)
 
     def _build_backend(self, degraded: bool):
         if self.app.stt.backend == "fake":
@@ -193,6 +194,8 @@ class SessionWorker:
             vocabulary=vocab,
             rotate_after_seconds=self.app.stt.rotate_after_seconds,
             overlap_seconds=self.app.stt.overlap_seconds,
+            commit_sentences=self.app.stt.commit_sentences,
+            commit_max_words=self.app.stt.commit_max_words,
             on_rotate=self._count_rotation,
         )
 
@@ -287,13 +290,17 @@ class SessionWorker:
         )
         await self.bus.publish(topic_captions(self.cfg.id, lang), caption.to_dict())
 
-        if not evt.is_final:
-            return
-
+        # Latency is sampled wherever the backend could measure it honestly,
+        # which includes the first caption of a speech burst -- so a stage whose
+        # speaker never pauses still reports how far behind the text is.
         if evt.latency_ms is not None:
             self.latency.add(evt.latency_ms)
             self.status.latency_p50 = self.latency.p50
             self.status.latency_p95 = self.latency.p95
+
+        if not evt.is_final:
+            return
+
         self.status.captions_final += 1
         self.status.cost_usd = self.cost.total_usd
         self.finals.setdefault(lang, []).append(caption.to_dict())

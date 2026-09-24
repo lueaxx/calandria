@@ -45,8 +45,20 @@ def main(argv: list[str] | None = None) -> int:
 
     from .config import Config
 
+    # A path the operator typed must exist. Only the implicit default is
+    # allowed to be absent -- otherwise a typo in -c silently loads defaults and
+    # the resulting complaint is about missing sessions rather than the missing
+    # file, which is the wrong thing to be debugging on the morning of an event.
+    path = Path(args.config)
+    explicit = args.config != parser.get_default("config")
+    if not path.exists():
+        if explicit:
+            print(f"configuration file not found: {path}", file=sys.stderr)
+            return 2
+        path = None
+
     try:
-        cfg = Config.load(args.config if Path(args.config).exists() else None)
+        cfg = Config.load(path)
     except Exception as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2

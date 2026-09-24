@@ -65,6 +65,14 @@ class SttConfig(BaseModel):
     rotate_after_seconds: int = 480
     overlap_seconds: float = 3.0
 
+    # The model finalises a segment when it hears end of speech, which on a
+    # speaker in full flow can be 15-20 seconds apart, or never. Translation
+    # runs on finalised text, so waiting for that marker makes translated
+    # captions hostage to how often the speaker pauses. With this on, a sentence
+    # the model has moved past is treated as settled. See stt/commit.py.
+    commit_sentences: bool = True
+    commit_max_words: int = 30  # release a run-on with no punctuation anyway
+
     # If the streaming backend cannot be kept alive, fall back to chunked
     # transcription rather than going silent. Higher latency, still captions.
     fallback_enabled: bool = True
@@ -94,6 +102,10 @@ class TranslationConfig(BaseModel):
     context_segments: int = 3
     temperature: float = 0.1
     max_concurrent: int = 4  # per session, across all target languages
+    # How long to keep retrying a line that hit a rate limit or a capacity
+    # blip. Past this the line is stale enough that showing it would confuse a
+    # reader more than omitting it.
+    retry_budget_seconds: float = 6.0
 
 
 class FeatureFlags(BaseModel):

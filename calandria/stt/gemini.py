@@ -36,6 +36,7 @@ from google.genai import types
 
 from ..audio.base import AudioChunk
 from .base import SttError, SttEvent
+from .commit import SentenceCommitter
 from .dedup import dedup_overlap, tail_words
 
 log = logging.getLogger("calandria.stt")
@@ -46,7 +47,9 @@ _SENTINEL = object()
 class _LiveSession:
     """One websocket to the transcription model."""
 
-    def __init__(self, client: genai.Client, model: str, config: types.LiveConnectConfig):
+    def __init__(self, client: genai.Client, model: str,
+                 config: types.LiveConnectConfig,
+                 committer: SentenceCommitter | None = None):
         self._client = client
         self._model = model
         self._config = config
@@ -64,6 +67,14 @@ class _LiveSession:
         # A finalized transcript is held here until the server reports where
         # the speech actually ended. See _flush_pending.
         self._pending_final: tuple[str, float] | None = None
+        # Releases settled sentences without waiting for the model's own
+        # end-of-speech marker. None disables the behaviour entirely.
+        self._committer = committer
+        # Audio offset where the current speech burst began, kept until the
+        # first hypothesis covering it arrives so that 'time to first caption'
+        # can be measured for every stage -- including one whose speaker never
+        # pauses long enough to produce an end-of-speech marker.
+        self._speech_start: float | None = None
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -127,6 +138,8 @@ class _LiveSession:
                     kind = getattr(va.voice_activity_type, "name", "")
                     if kind == "ACTIVITY_END":
                         self._flush_pending(_parse_offset(va.audio_offset))
+                    elif kind == "ACTIVITY_START":
+                        self._speech_start = _parse_offset(va.audio_offset)
 
                 sc = response.server_content
                 if not sc:
@@ -137,9 +150,7 @@ class _LiveSession:
                     # A new hypothesis means the previous utterance is over and
                     # its end-of-speech marker is not coming.
                     self._flush_pending(None)
-                    self._push(SttEvent(
-                        text=interim.text, is_final=False, audio_ts=self.audio_seconds
-                    ))
+                    self._on_hypothesis(interim.text)
 
                 final = sc.input_transcription
                 if final is not None and final.text:
@@ -147,6 +158,36 @@ class _LiveSession:
                     self._pending_final = (final.text, now)
         finally:
             self._flush_pending(None)
+
+    def _on_hypothesis(self, text: str) -> None:
+        """Release whatever the running hypothesis has settled, show the rest.
+
+        Waiting for the model's own end-of-speech marker before treating
+        anything as final makes translation hostage to how often the speaker
+        pauses -- measured at 15 to 20 seconds on a real talk, and never at all
+        on continuous speech. Sentences the model has moved past are released
+        here instead. See stt/commit.py.
+        """
+        first_caption_ms = self._time_to_first_caption()
+
+        if self._committer is None:
+            self._push(SttEvent(text=text, is_final=False,
+                                audio_ts=self.audio_seconds,
+                                latency_ms=first_caption_ms))
+            return
+
+        settled, tail = self._committer.offer(text)
+        if settled:
+            # No end-of-speech marker exists for a sentence released this way,
+            # so there is no honest latency to attach. Leaving it unset keeps
+            # the reported percentiles measurements rather than guesses.
+            self._push(SttEvent(
+                text=settled, is_final=True, audio_ts=self.audio_seconds, latency_ms=None
+            ))
+        if tail:
+            self._push(SttEvent(text=tail, is_final=False,
+                                audio_ts=self.audio_seconds,
+                                latency_ms=first_caption_ms))
 
     def _flush_pending(self, speech_end_offset: float | None) -> None:
         """Release a held final, timing it against where speech really ended.
@@ -163,6 +204,13 @@ class _LiveSession:
         text, arrived_at = self._pending_final
         self._pending_final = None
 
+        # Most of this utterance has usually been released already; only the
+        # part the audience has not seen is new.
+        if self._committer is not None:
+            text = self._committer.finish(text)
+            if not text.strip():
+                return
+
         audio_ts = self.audio_seconds
         latency = None
         if speech_end_offset is not None:
@@ -173,6 +221,21 @@ class _LiveSession:
         self._push(SttEvent(
             text=text, is_final=True, audio_ts=audio_ts, latency_ms=latency
         ))
+
+    def _time_to_first_caption(self) -> float | None:
+        """Wall-clock delay between speech starting and text existing for it.
+
+        Reported once per speech burst. Unlike the end-of-speech measurement it
+        does not depend on the speaker pausing, so every stage produces samples
+        and an operator can tell a healthy stage from a stalled one.
+        """
+        if self._speech_start is None:
+            return None
+        sent_at = self._fed_at_nearest(self._speech_start)
+        self._speech_start = None
+        if sent_at is None:
+            return None
+        return max((time.monotonic() - sent_at) * 1000, 0.0)
 
     def _fed_at_nearest(self, offset: float) -> float | None:
         """When did we hand over the audio at this position?
@@ -218,6 +281,8 @@ class GeminiLiveBackend:
         vocabulary: list[str] | None = None,
         rotate_after_seconds: float = 480,
         overlap_seconds: float = 3.0,
+        commit_sentences: bool = True,
+        commit_max_words: int = 30,
         on_audio_seconds: Callable[[float], None] | None = None,
         on_rotate: Callable[[], None] | None = None,
     ) -> None:
@@ -225,6 +290,8 @@ class GeminiLiveBackend:
         self._model = model
         self._rotate_after = rotate_after_seconds
         self._overlap = overlap_seconds
+        self._commit = commit_sentences
+        self._commit_max_words = commit_max_words
         self._on_audio_seconds = on_audio_seconds
         self._on_rotate = on_rotate
 
@@ -247,7 +314,8 @@ class GeminiLiveBackend:
         )
 
     def _new_session(self) -> _LiveSession:
-        s = _LiveSession(self._client, self._model, self._config)
+        committer = SentenceCommitter(self._commit_max_words) if self._commit else None
+        s = _LiveSession(self._client, self._model, self._config, committer)
         s.start()
         return s
 

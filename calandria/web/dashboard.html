@@ -257,7 +257,7 @@ function meter(p50, p95) {
   const over = (p95 ?? p50) > LIVE_BUDGET * 2 ? "crit" : (p95 ?? p50) > LIVE_BUDGET ? "warn" : "";
   const mark = LIVE_BUDGET / METER_FULL * 100;
   return `<div class="lat">
-    <div class="meter" data-over="${over}" title="p50 ${p50} ms · p95 ${p95 ?? "—"} ms · la marca es 1 s">
+    <div class="meter" data-over="${over}" title="Desde que la persona habla hasta que el subtítulo existe.&#10;p50 ${p50} ms · p95 ${p95 ?? "—"} ms&#10;La marca vertical es 1 segundo: por debajo, la audiencia le sigue el ritmo.">
       <i style="width:${pct.toFixed(1)}%"></i><u style="left:${mark}%"></u>
     </div>
     <span class="vals"><b>${p50}</b>&thinsp;/&thinsp;${p95 ?? "—"}</span>
