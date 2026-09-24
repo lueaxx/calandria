@@ -348,3 +348,42 @@ def test_similar_short_sentences_are_both_captioned():
     c.finish("We tested option A on the staging cluster.")
     out = c.finish("We tested option B on the staging cluster.")
     assert "option B" in out
+
+
+def test_a_replay_carrying_new_speech_keeps_only_the_new_speech():
+    """Observed live on looping audio, and the reason the question is a length.
+
+    The replayed hypothesis was 73 words: 61 the audience had read and 12 they
+    had not. Suppressing it lost the 12; releasing it repeated the 61.
+    """
+    shown = ("Buenos días y gracias por venir a esta charla. Vamos a hablar de "
+             "accesibilidad en eventos técnicos. La transcripción en vivo no es "
+             "una función extra.")
+    c = SentenceCommitter()
+    c.offer(shown + " Y")
+    c.finish(shown)
+
+    replay = shown + " Las herramientas comerciales son caras. Y ahora"
+    settled, _ = c.offer(replay)
+    assert "herramientas comerciales son caras" in settled
+    assert "Buenos días" not in settled
+    assert len(normalise(settled)) < 12
+
+
+def test_a_decimal_point_does_not_end_a_sentence():
+    """Observed live: "Apache 2.0" produced a caption reading just "0."."""
+    assert split_sentences("El código está bajo Apache 2.0. Se levanta con un comando.") == [
+        "El código está bajo Apache 2.0.", "Se levanta con un comando.",
+    ]
+
+
+def test_version_numbers_and_decimals_survive():
+    assert split_sentences("Latency fell 1.5 times after Python 3.13.") == [
+        "Latency fell 1.5 times after Python 3.13.",
+    ]
+
+
+def test_a_real_sentence_break_before_a_number_still_splits():
+    assert split_sentences("That was the plan. 40 services later we knew better.") == [
+        "That was the plan.", "40 services later we knew better.",
+    ]

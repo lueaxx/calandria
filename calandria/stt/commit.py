@@ -55,8 +55,23 @@ _SIMILARITY_MIN_WORDS = 25
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split into sentences, keeping their punctuation and dropping padding."""
-    return [s.strip() for s in _SENTENCE.findall(text or "") if s.strip()]
+    """Split into sentences, keeping their punctuation and dropping padding.
+
+    A full stop between digits is a decimal point, not the end of anything:
+    without this, "Apache 2.0" becomes a sentence ending in "Apache 2." and a
+    second one reading "0.", and the audience sees a caption containing a single
+    zero. Version numbers and decimals turn up constantly in technical talks.
+    """
+    parts = [s.strip() for s in _SENTENCE.findall(text or "") if s.strip()]
+    merged: list[str] = []
+    for part in parts:
+        if (merged and part[0].isdigit()
+                and len(merged[-1]) > 1 and merged[-1][-1] == "."
+                and merged[-1][-2].isdigit()):
+            merged[-1] = merged[-1] + part
+        else:
+            merged.append(part)
+    return merged
 
 
 def word_count(text: str) -> int:
@@ -160,12 +175,11 @@ class SentenceCommitter:
         if settled_upto <= first_new:
             return "", tail
 
-        new = " ".join(sentences[first_new:settled_upto])
         # The cut point says where this utterance was left off; it says nothing
-        # about whether the audience has read these words before. At the end of
-        # a stream the model replays the whole utterance as a fresh hypothesis,
-        # which resets the cut point and would otherwise republish all of it.
-        if self._already_shown(normalise(new)):
+        # about whether the audience has read these words before. A replayed
+        # utterance resets the cut point, so the history is consulted too.
+        new = self._drop_already_shown(" ".join(sentences[first_new:settled_upto]))
+        if not new.strip():
             return "", tail
         self._remember(normalise(new))
         return new, tail
@@ -195,6 +209,40 @@ class SentenceCommitter:
                 if trimmed != candidate:
                     return trimmed
         return text
+
+    def _shown_prefix_len(self, words: list[str]) -> int:
+        """How many of these words, from the start, the audience has read.
+
+        The question is a length, not a yes or no. A replayed utterance usually
+        arrives with a little new speech on the end, so "have they seen this"
+        has no good answer: suppressing loses the new part, releasing repeats
+        the old one. Asking how much was seen makes the cut exact.
+        """
+        best, n = 0, len(self._history)
+        for start in range(n):
+            k = 0
+            while (start + k < n and k < len(words)
+                   and self._history[start + k] == words[k]):
+                k += 1
+            if k > best:
+                best = k
+                if best == len(words):
+                    break
+        return best
+
+    def _drop_already_shown(self, text: str) -> str:
+        """Remove the leading part of `text` that has already been read."""
+        words = normalise(text)
+        if not words or not self._history:
+            return text
+        seen = self._shown_prefix_len(words)
+        if seen >= len(words):
+            return ""
+        if seen >= _MIN_RESTATEMENT_WORDS:
+            return drop_leading_words(text, seen)
+        # No usable prefix: the retelling may have been reworded rather than
+        # replayed, which only a similarity comparison can recognise.
+        return "" if self._already_shown(words) else text
 
     def _already_shown(self, words: list[str]) -> bool:
         """Is this exact run of words sitting somewhere in what was shown?
@@ -262,7 +310,7 @@ class SentenceCommitter:
             # and cutting on sentence boundaries would show that clause twice.
             new = drop_leading_words(final_text, covered)
         else:
-            new = self._trim_reworded(final_text)
+            new = self._drop_already_shown(self._trim_reworded(final_text))
 
         if not new.strip():
             return ""
