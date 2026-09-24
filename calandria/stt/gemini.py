@@ -75,6 +75,11 @@ class _LiveSession:
         # can be measured for every stage -- including one whose speaker never
         # pauses long enough to produce an end-of-speech marker.
         self._speech_start: float | None = None
+        # Where this session sits in the talk. The server's audio offsets are
+        # relative to the session, and a session is replaced every few minutes,
+        # so after the first rotation its clock restarts at zero while the talk
+        # does not. Everything the server reports is shifted by this.
+        self.base_offset: float | None = None
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -120,6 +125,10 @@ class _LiveSession:
             await session.send_realtime_input(
                 audio=types.Blob(data=item.data, mime_type="audio/pcm;rate=16000")
             )
+            if self.base_offset is None:
+                self.base_offset = item.ts_start
+            # Keyed by position in the talk, which is what the rest of the
+            # system means by a timestamp.
             self.fed_at[round(item.ts_end, 1)] = time.monotonic()
             self.audio_seconds = item.ts_end
 
@@ -137,9 +146,9 @@ class _LiveSession:
                 if va is not None and va.audio_offset is not None:
                     kind = getattr(va.voice_activity_type, "name", "")
                     if kind == "ACTIVITY_END":
-                        self._flush_pending(_parse_offset(va.audio_offset))
+                        self._flush_pending(self._to_talk_time(va.audio_offset))
                     elif kind == "ACTIVITY_START":
-                        self._speech_start = _parse_offset(va.audio_offset)
+                        self._speech_start = self._to_talk_time(va.audio_offset)
 
                 sc = response.server_content
                 if not sc:
@@ -221,6 +230,13 @@ class _LiveSession:
         self._push(SttEvent(
             text=text, is_final=True, audio_ts=audio_ts, latency_ms=latency
         ))
+
+    def _to_talk_time(self, audio_offset) -> float | None:
+        """Convert a session-relative offset into a position in the talk."""
+        offset = _parse_offset(audio_offset)
+        if offset is None:
+            return None
+        return (self.base_offset or 0.0) + offset
 
     def _time_to_first_caption(self) -> float | None:
         """Wall-clock delay between speech starting and text existing for it.

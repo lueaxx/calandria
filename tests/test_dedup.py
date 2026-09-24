@@ -63,3 +63,14 @@ def test_only_the_tail_of_prev_is_considered():
 @pytest.mark.parametrize("junk", ["...", "—", "  ", "\n"])
 def test_whitespace_and_punctuation_only_text(junk):
     assert dedup_overlap("something real", junk).strip() in ("", junk.strip())
+
+
+def test_numbers_written_two_ways_compare_equal():
+    """Observed live: the model wrote "2,000" once and "2000" the next time.
+
+    Tokenising on word characters alone splits "2,000" into two, so the word
+    sequences differ and every comparison built on them misses the repeat.
+    """
+    prev = "our p99 latency went from 2,000 milliseconds to under 150"
+    new = "Our P99 latency went from 2000 milliseconds to under 150. The commit that fixed it."
+    assert dedup_overlap(prev, new) == "The commit that fixed it."

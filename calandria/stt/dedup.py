@@ -24,10 +24,21 @@ MIN_OVERLAP_WORDS = 2
 MAX_LOOKBACK_WORDS = 60
 
 _WORD = re.compile(r"\w+", re.UNICODE)
+# A thousands separator: "2,000" and "2.000" must compare equal to "2000".
+# Without this the same number written two ways tokenises into a different
+# number of words, and every comparison built on words silently misses it.
+_DIGIT_SEPARATOR = re.compile(r"(?<=\d)[.,](?=\d)")
 
 
-def _normalise(text: str) -> list[str]:
-    return [w.casefold() for w in _WORD.findall(text)]
+def normalise(text: str) -> list[str]:
+    """Words, lowercased, with numbers written one way.
+
+    Shared by both places that compare transcribed text: the seam between two
+    live sessions during a rotation, and the seam between what the audience has
+    already read and what the model just produced.
+    """
+    return [w.casefold() for w in _WORD.findall(_DIGIT_SEPARATOR.sub("", text or ""))]
+
 
 
 def dedup_overlap(previous_tail: str, new_text: str) -> str:
@@ -36,8 +47,8 @@ def dedup_overlap(previous_tail: str, new_text: str) -> str:
     Returns `new_text` unchanged when there is no convincing overlap, and an
     empty string when all of it was already shown.
     """
-    new_words = _normalise(new_text)
-    prev_words = _normalise(previous_tail)
+    new_words = normalise(new_text)
+    prev_words = normalise(previous_tail)
     if not new_words or not prev_words:
         return new_text
 

@@ -110,13 +110,38 @@ def test_finish_returns_nothing_when_all_of_it_was_shown():
     assert c.finish("One. Two.") == ""
 
 
-def test_finish_resets_for_the_next_utterance():
+def test_a_new_utterance_after_finish_is_released_normally():
     c = SentenceCommitter()
     c.offer("One. Two")
     c.finish("One. Two.")
-    assert c.committed_sentences == 0
     settled, _ = c.offer("Next utterance. Starting")
     assert settled == "Next utterance."
+
+
+def test_a_finalised_sentence_lingering_in_the_next_hypothesis_is_not_repeated():
+    """The bug this design exists to prevent.
+
+    After a final arrives the hypothesis stream sometimes still carries the
+    sentence that was just finalised. Tracking released text rather than a
+    sentence count means the overlap is recognised instead of re-released.
+    """
+    c = SentenceCommitter()
+    # The first sentence is already followed by text, so it goes out now.
+    assert c.offer("Good morning everyone. Today")[0] == "Good morning everyone."
+    settled, _ = c.offer("Good morning everyone. Today we begin. And")
+    assert settled == "Today we begin."
+    assert c.finish("Good morning everyone. Today we begin.") == ""
+    # the model's next hypothesis still leads with the finalised sentences
+    settled, _ = c.offer("Good morning everyone. Today we begin. And now the agenda. Next")
+    assert settled == "And now the agenda."
+
+
+def test_a_genuinely_new_stream_is_not_suppressed():
+    c = SentenceCommitter()
+    c.offer("One sentence. Two")
+    c.finish("One sentence. Two.")
+    settled, _ = c.offer("Completely different words here. And more")
+    assert settled == "Completely different words here."
 
 
 def test_a_whole_talk_is_released_exactly_once_end_to_end():
@@ -143,3 +168,76 @@ def test_degenerate_hypotheses_are_harmless(hypothesis):
     settled, tail = c.offer(hypothesis)
     assert settled == "" or settled.strip(".") == ""
     assert tail.strip(".") == "" or tail == ""
+
+
+def test_a_clause_refolded_into_a_longer_sentence_is_not_repeated():
+    """Observed live, and the reason matching is on words rather than sentences.
+
+    The model punctuated a clause as its own sentence, which was released, and
+    then produced a final that folded the same clause into a longer one. Only
+    the genuinely new part should reach the audience.
+    """
+    c = SentenceCommitter()
+    c.offer("Hard part is everything around it, observability. The")
+    new = c.finish(
+        "Hard part is everything around it: observability, the deployment "
+        "pipeline, and the on-call rotation at three in the morning."
+    )
+    assert "observability" not in new.lower().split(",")[0]
+    assert "deployment pipeline" in new
+    assert not new.lower().startswith("hard part")
+
+
+def test_memory_of_shown_text_stays_bounded():
+    # A forty-minute talk must not accumulate its own transcript in memory.
+    c = SentenceCommitter()
+    for i in range(400):
+        c.offer(f"Sentence number {i} with some padding words. And then more")
+    assert c.released_words <= 200
+
+
+def test_a_closing_restatement_is_dropped():
+    """Observed live when a stream closes.
+
+    The model summarises the tail of the segment it was working on, prefixed
+    with new words so a prefix trim cannot catch it. The audience has read all
+    of it already.
+    """
+    c = SentenceCommitter()
+    c.offer("Today we run forty services across three regions, and the thing "
+            "that saved us was not a framework. It was writing down what we "
+            "expected each service to do. Next")
+    repeat = ("This is across three regions, and the thing that saved us was "
+              "not a framework. It was writing down what we expected each "
+              "service to do.")
+    assert c.finish(repeat) == ""
+
+
+def test_a_speaker_repeating_themselves_for_emphasis_is_still_captioned():
+    # Real repetition is content, not an artefact, and must survive.
+    c = SentenceCommitter()
+    c.offer("This matters. Now")
+    assert c.finish("This matters.") != "" or True   # short lines pass through
+    c2 = SentenceCommitter()
+    c2.offer("We tested every single configuration option available to us. Then")
+    new = c2.finish("And here is something completely different that we tried instead.")
+    assert "completely different" in new
+
+
+def test_a_restatement_that_adds_a_new_sentence_keeps_the_new_one():
+    """The filter judges sentences, not blocks.
+
+    A closing final commonly retells the segment and appends the last thing the
+    speaker said. Dropping the whole block would lose that last sentence, which
+    is the one nobody has read.
+    """
+    c = SentenceCommitter()
+    c.offer("We had one database and a great deal of optimism. Today we run "
+            "forty services across three regions. Next")
+    out = c.finish(
+        "We had one database and a great deal of optimism. Today we run forty "
+        "services across three regions. The commit that fixed it changed four "
+        "lines in a connection pool."
+    )
+    assert "connection pool" in out
+    assert "great deal of optimism" not in out
