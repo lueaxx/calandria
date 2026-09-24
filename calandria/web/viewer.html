@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Calandria</title>
+<meta name="description" content="Subtítulos en vivo de la conferencia.">
+<meta name="color-scheme" content="dark light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="mark" href="/" aria-label="Calandria">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M21.4 3.6 16.9 5.9A8.2 8.2 0 0 0 4 12.6c0 2 .7 3.8 1.9 5.2L3.1 20.4h9.1a8.2 8.2 0 0 0 7.5-11.6l1.7-5.2ZM15 8.9a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z"/></svg>
+    <span>Calandria</span>
+  </a>
+
+  <span class="dot" id="dot" data-state="idle" role="status" aria-live="polite"
+        title="Estado de la sesión"></span>
+
+  <select id="session" aria-label="Sala"></select>
+  <select id="lang" aria-label="Idioma"></select>
+
+  <span class="spacer"></span>
+
+  <div class="sizer">
+    <button id="smaller" aria-label="Texto más chico">A</button>
+    <button id="bigger" aria-label="Texto más grande">A</button>
+  </div>
+  <button id="theme" aria-label="Cambiar entre claro y oscuro">◐</button>
+</header>
+
+<main class="stream" id="stream">
+  <div class="stream-inner" id="inner">
+    <p class="notice" id="notice"><strong>Conectando</strong>Elegí una sala y un idioma para empezar a leer.</p>
+  </div>
+</main>
+
+<button class="jump" id="jump" hidden>Volver a lo último</button>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const stream = $("stream"), inner = $("inner");
+let ws = null, current = { session: null, lang: null }, sourceLang = null;
+let config = { sessions: [], language_names: {} };
+let pinned = true;               // following the speaker, rather than reading back
+const settled = new Map();       // seq -> the block of lines that utterance produced
+
+const LANG_LABEL = {
+  en: "English", es: "Español", pt: "Português", fr: "Français",
+  de: "Deutsch", it: "Italiano", ca: "Català", ja: "日本語", zh: "中文",
+};
+const label = (code) => LANG_LABEL[code] || config.language_names[code] || code;
+
+/* ---------------------------------------------------------------- settings */
+
+const saved = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+let step = parseFloat(saved("size", "0")) || 0;
+function applySize() {
+  document.documentElement.style.setProperty(
+    "--step", `clamp(${1.25 + step * 0.2}rem, ${1 + step * 0.2}rem + 1.6vw, ${2 + step * 0.3}rem)`
+  );
+  save("size", step);
+}
+$("bigger").onclick = () => { step = Math.min(step + 1, 5); applySize(); };
+$("smaller").onclick = () => { step = Math.max(step - 1, -2); applySize(); };
+applySize();
+
+document.documentElement.dataset.theme = saved("theme", "dark");
+$("theme").onclick = () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  save("theme", next);
+};
+
+/* ------------------------------------------------------------------ layout */
+
+stream.addEventListener("scroll", () => {
+  const atEnd = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80;
+  pinned = atEnd;
+  $("jump").hidden = atEnd;
+});
+$("jump").onclick = () => { pinned = true; $("jump").hidden = true; toEnd(); };
+function toEnd() { if (pinned) stream.scrollTop = stream.scrollHeight; }
+
+/* ------------------------------------------------------------------- setup */
+
+async function boot() {
+  config = await (await fetch("/api/config")).json();
+  const sel = $("session");
+  sel.innerHTML = "";
+  for (const s of config.sessions) {
+    sel.append(new Option(s.title, s.id));
+  }
+  const wanted = new URLSearchParams(location.search).get("session") || saved("session", "");
+  if (wanted && config.sessions.some((s) => s.id === wanted)) sel.value = wanted;
+  sel.onchange = () => { save("session", sel.value); fillLanguages(); connect(); };
+  fillLanguages();
+  connect();
+}
+
+function fillLanguages() {
+  const s = config.sessions.find((x) => x.id === $("session").value);
+  if (!s) return;
+  sourceLang = s.source_language;
+  const sel = $("lang");
+  sel.innerHTML = "";
+  for (const code of s.languages) {
+    sel.append(new Option(code === s.source_language ? `${label(code)} (original)` : label(code), code));
+  }
+  if (s.languages.length > 1) sel.append(new Option("Original + traducción", "both"));
+
+  const wanted = new URLSearchParams(location.search).get("lang")
+    || saved("lang", navigator.language.slice(0, 2));
+  if ([...sel.options].some((o) => o.value === wanted)) sel.value = wanted;
+  sel.onchange = () => { save("lang", sel.value); connect(); };
+}
+
+/* -------------------------------------------------------------- the stream */
+
+function connect() {
+  const session = $("session").value, lang = $("lang").value;
+  if (!session || !lang) return;
+  if (ws) { ws.onclose = null; ws.close(); }
+  inner.innerHTML = "";
+  settled.clear();
+  utterance = null;
+  pinned = true;
+  current = { session, lang };
+
+  const wanted = lang === "both" ? sourceLang : lang;
+  openSocket(wanted, lang === "both");
+  if (lang === "both") openPairSocket();
+}
+
+const pairs = new Map();   // seq -> { source, target } for the stacked view
+
+function socketURL(lang) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const replay = Math.min(60, 200);
+  return `${proto}://${location.host}/ws/captions`
+    + `?session=${encodeURIComponent(current.session)}&lang=${encodeURIComponent(lang)}&replay=${replay}`;
+}
+
+function openSocket(lang, paired) {
+  ws = new WebSocket(socketURL(lang));
+  ws.onopen = () => setState("running");
+  ws.onclose = () => { setState("idle"); setTimeout(() => { if (ws && ws.readyState > 1) connect(); }, 2000); };
+  ws.onmessage = (e) => paired ? onPairMessage(JSON.parse(e.data), "source")
+                               : onMessage(JSON.parse(e.data));
+}
+
+let pairWs = null;
+function openPairSocket() {
+  const target = $("lang").value === "both"
+    ? config.sessions.find((s) => s.id === current.session).languages.find((l) => l !== sourceLang)
+    : null;
+  if (!target) return;
+  if (pairWs) { pairWs.onclose = null; pairWs.close(); }
+  pairWs = new WebSocket(socketURL(target));
+  pairWs.onmessage = (e) => onPairMessage(JSON.parse(e.data), "target");
+}
+
+function setState(s) { $("dot").dataset.state = s; }
+
+/* The model returns the whole running hypothesis on every interim update, not
+   just the new words. Rendered as one paragraph that would mean re-wrapping
+   everything the reader is in the middle of, several times a second -- which is
+   precisely the reader who cannot fall back on hearing the speaker.
+
+   So the utterance is split on sentence boundaries. Completed sentences are
+   laid down as settled lines and left alone, and only the trailing fragment
+   keeps the provisional styling and the caret. A sentence that is already
+   finished almost never changes, so its line stops moving. */
+const SENTENCE = /[^.!?…]+[.!?…]*\s*/g;
+
+function sentences(text) {
+  const out = (text.match(SENTENCE) || []).map((s) => s.trim()).filter(Boolean);
+  return out.length ? out : [text];
+}
+
+let utterance = null;   // container holding the sentences of the current utterance
+
+function ensureUtterance() {
+  if (!utterance) {
+    utterance = document.createElement("div");
+    inner.append(utterance);
+  }
+  return utterance;
+}
+
+function paint(parts, { final, origin }) {
+  const box = ensureUtterance();
+  parts.forEach((text, i) => {
+    let p = box.children[i];
+    if (!p) {
+      p = document.createElement("p");
+      box.append(p);
+    }
+    const provisional = !final && i === parts.length - 1;
+    // Only touch the DOM when the text really changed, so settled lines never
+    // repaint and the reader's place on the page holds still.
+    if (p.textContent !== text) p.textContent = text;
+    const cls = "line" + (provisional ? " interim" : "");
+    if (p.className !== cls) p.className = cls;
+    if (origin) p.dataset.origin = origin;
+  });
+  while (box.children.length > parts.length) box.lastChild.remove();
+}
+
+function onMessage(c) {
+  if (!c.text) return;
+  if (!c.is_final) {
+    paint(sentences(c.text), { final: false, origin: c.origin });
+    toEnd();
+    return;
+  }
+  paint(sentences(c.text), { final: true, origin: c.origin });
+  settled.set(c.seq, utterance);
+  utterance = null;   // the next interim starts a fresh block
+  trim();
+  toEnd();
+}
+
+function onPairMessage(c, side) {
+  if (!c.text || !c.is_final) return;
+  let entry = pairs.get(c.seq);
+  if (!entry) {
+    const block = document.createElement("div");
+    block.className = "pair";
+    block.innerHTML = '<p class="source"></p><p class="target"></p>';
+    inner.append(block);
+    entry = { block };
+    pairs.set(c.seq, entry);
+  }
+  entry.block.querySelector(side === "source" ? ".source" : ".target").textContent = c.text;
+  trim();
+  toEnd();
+}
+
+/* Keep the DOM bounded. A full day on one stage would otherwise grow without
+   limit on a phone that is also running the conference app and a camera. */
+function trim() {
+  const max = 400;
+  while (inner.children.length > max) inner.removeChild(inner.firstChild);
+}
+
+boot().catch((err) => {
+  $("notice").innerHTML =
+    "<strong>No se pudo conectar</strong>El servidor de Calandria no responde. "
+    + "Revisá que esté corriendo y recargá la página.";
+  console.error(err);
+});
+</script>
+</body>
+</html>

@@ -17,7 +17,11 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class SourceConfig(BaseModel):
-    type: Literal["file", "stream", "mic"] = "file"
+    # 'mic' is the default because it is the only type that needs no further
+    # settings: a stage with no configured source is one you push audio to over
+    # /ws/ingest. Defaulting to 'file' would make the default value invalid,
+    # which turns `POST /api/sessions {"id": "track-3"}` into a puzzle.
+    type: Literal["file", "stream", "mic"] = "mic"
     path: str | None = None
     url: str | None = None
     loop: bool = False  # replay a file forever (handy for demos and soak tests)

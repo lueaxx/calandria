@@ -1,0 +1,44 @@
+# Two ways to run this:
+#
+#   docker compose up                 one process, in-memory bus. Enough for
+#                                     most conferences -- a single container
+#                                     carries well over a dozen stages.
+#
+#   docker compose --profile scale up scale-out: Redis carries captions between
+#                                     replicas, so any replica can serve any
+#                                     viewer. See SCALING.md.
+
+services:
+  calandria:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      CALANDRIA_STT_BACKEND: ${CALANDRIA_STT_BACKEND:-gemini}
+    volumes:
+      - ./calandria.yaml:/app/calandria.yaml:ro
+      - ./glossary.yaml:/app/glossary.yaml:ro
+      - ./samples:/app/samples:ro
+      - ./transcripts:/app/transcripts
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["scale"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+  calandria-scaled:
+    build: .
+    profiles: ["scale"]
+    depends_on: [redis]
+    ports: ["8081:8080"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      CALANDRIA_BUS: redis://redis:6379
+    volumes:
+      - ./calandria.yaml:/app/calandria.yaml:ro
+      - ./glossary.yaml:/app/glossary.yaml:ro
+      - ./samples:/app/samples:ro
+      - ./transcripts:/app/transcripts
+    restart: unless-stopped

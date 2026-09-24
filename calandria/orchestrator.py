@@ -183,7 +183,6 @@ class SessionWorker:
                 language=lang,
                 vocabulary=vocab,
                 window_seconds=self.app.stt.fallback_chunk_seconds,
-                on_audio_seconds=self._count_audio,
             )
         return GeminiLiveBackend(
             self.client,
@@ -194,13 +193,19 @@ class SessionWorker:
             vocabulary=vocab,
             rotate_after_seconds=self.app.stt.rotate_after_seconds,
             overlap_seconds=self.app.stt.overlap_seconds,
-            on_audio_seconds=self._count_audio,
             on_rotate=self._count_rotation,
         )
 
     def _count_audio(self, seconds: float) -> None:
+        """How much audio this stage has handled.
+
+        Counted here, in the pump, rather than inside a backend: every chunk
+        passes through this queue whatever is transcribing it, so the figure
+        does not depend on each backend remembering to report. Spend is a
+        separate question -- the fake backend moves audio and costs nothing.
+        """
         self.status.audio_seconds += seconds
-        if self.app.features.cost_tracking:
+        if self.app.features.cost_tracking and self.app.stt.backend != "fake":
             self.cost.add_audio(seconds)
 
     def _count_rotation(self) -> None:
@@ -210,6 +215,7 @@ class SessionWorker:
         assert self._source is not None
         try:
             async for chunk in self._source.frames():
+                self._count_audio(chunk.ts_end - chunk.ts_start)
                 if self._audio_q.full():
                     with contextlib.suppress(asyncio.QueueEmpty):
                         self._audio_q.get_nowait()

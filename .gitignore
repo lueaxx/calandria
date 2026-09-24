@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 transcripts/
-samples/*.wav
+# sample audio is small and part of the demo, so it is tracked
+# samples/*.wav
 !samples/README.md
 transcripts/

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calandria overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@600&display=swap">
+<style>
+/* Burned into a live stream, so this page owns nothing but the words.
+   The background stays transparent for OBS and vMix browser sources, and the
+   text carries its own contrast because it will sit over footage nobody has
+   colour-graded yet -- a bright slide, a dark stage, a speaker in a white
+   shirt. A shadow alone fails over light backgrounds; an outline alone fails
+   over busy ones. Both, together, hold up over anything. */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  padding: 3vh 6vw;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-weight: 600;
+}
+
+body[data-position="bottom"] { align-items: flex-end; }
+body[data-position="top"]    { align-items: flex-start; }
+body[data-position="center"] { align-items: center; }
+
+#box {
+  width: 100%;
+  text-align: center;
+  line-height: 1.3;
+  color: #fff;
+  font-size: var(--size, 3.2vw);
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+  paint-order: stroke fill;
+  -webkit-text-stroke: 0.14em rgba(0, 0, 0, 0.82);
+  text-shadow:
+    0 0.06em 0.18em rgba(0, 0, 0, 0.9),
+    0 0 0.5em rgba(0, 0, 0, 0.55);
+}
+
+/* An optional plate, for streams whose footage is too busy for outline alone. */
+body[data-plate="on"] #box {
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+  background: rgba(0, 0, 0, 0.62);
+  border-radius: 0.25em;
+  padding: 0.35em 0.6em;
+  box-decoration-break: clone;
+}
+
+#box p { margin: 0; }
+#box p.interim { opacity: 0.82; }
+#box:empty { display: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  #box p { animation: rise 0.18s ease-out; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(0.25em); } }
+</style>
+</head>
+<body data-position="bottom">
+<div id="box" role="status" aria-live="polite"></div>
+
+<script>
+/* Configured entirely by query string, because an operator sets this up inside
+   OBS's "browser source" dialog where there is nowhere to click but a URL bar.
+   ?session=keynote&lang=es&lines=2&size=3.2vw&position=bottom&plate=on&hold=6 */
+const q = new URLSearchParams(location.search);
+const session = q.get("session");
+const lang = q.get("lang") || "es";
+const maxLines = Math.max(1, parseInt(q.get("lines") || "2", 10));
+const holdSeconds = parseFloat(q.get("hold") || "8");   // clear after silence
+const box = document.getElementById("box");
+
+document.body.dataset.position = q.get("position") || "bottom";
+if (q.get("plate")) document.body.dataset.plate = q.get("plate");
+if (q.get("size")) document.documentElement.style.setProperty("--size", q.get("size"));
+if (q.get("color")) box.style.color = q.get("color");
+
+if (!session) {
+  box.innerHTML = '<p>Add ?session=&lt;id&gt;&amp;lang=&lt;code&gt; to this URL</p>';
+} else {
+  connect();
+}
+
+const SENTENCE = /[^.!?…]+[.!?…]*\s*/g;
+function lastSentences(text, n) {
+  const parts = (text.match(SENTENCE) || []).map((s) => s.trim()).filter(Boolean);
+  return (parts.length ? parts : [text]).slice(-n);
+}
+
+const finals = [];
+let interim = "";
+let clearTimer = null;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(
+    `${proto}://${location.host}/ws/captions`
+    + `?session=${encodeURIComponent(session)}&lang=${encodeURIComponent(lang)}&replay=${maxLines}`
+  );
+  ws.onmessage = (e) => render(JSON.parse(e.data));
+  // A stream runs for hours unattended; reconnect quietly and forever.
+  ws.onclose = () => setTimeout(connect, 2000);
+  ws.onerror = () => ws.close();
+}
+
+function render(c) {
+  if (!c.text) return;
+  if (c.is_final) {
+    // A finalized utterance can be several sentences; each becomes its own line
+    // so the burned-in caption stays the size the operator asked for.
+    lastSentences(c.text, maxLines).forEach((s) => finals.push(s));
+    while (finals.length > maxLines) finals.shift();
+    interim = "";
+  } else {
+    // Interims carry the whole running hypothesis. Only the sentence being
+    // spoken belongs on screen -- the rest has already scrolled past.
+    interim = lastSentences(c.text, 1)[0] || "";
+  }
+  draw();
+
+  // Leaving the last sentence on screen through a long silence looks like a
+  // frozen stream. Clear it, and let the next word bring the captions back.
+  clearTimeout(clearTimer);
+  clearTimer = setTimeout(() => { finals.length = 0; interim = ""; draw(); },
+                          holdSeconds * 1000);
+}
+
+function draw() {
+  const lines = interim ? [...finals.slice(-(maxLines - 1)), interim] : finals.slice(-maxLines);
+  box.innerHTML = "";
+  lines.forEach((text, i) => {
+    const p = document.createElement("p");
+    if (interim && i === lines.length - 1) p.className = "interim";
+    p.textContent = text;
+    box.append(p);
+  });
+}
+</script>
+</body>
+</html>

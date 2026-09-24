@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calandria · operación</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+/* An operator watching ten stages needs to scan rows, not read cards. So this
+   is a table, and the only thing allowed to be large is the number that decides
+   whether the conference can afford to keep the captions on.
+
+   Status colours are the reserved good / warning / critical steps, and every
+   one of them ships with a distinct glyph and a written label. Green and amber
+   sit on the protan confusion axis -- no palette fixes that -- so hue is never
+   the only channel carrying the state. */
+
+:root {
+  --good: #0ca30c;
+  --warn-s: #fab219;
+  --crit: #d03b3b;
+  --grid: #34312b;
+}
+:root[data-theme="light"] { --grid: #d3ccb9; }
+
+body { display: flex; flex-direction: column; min-height: 100%; }
+
+main {
+  flex: 1;
+  width: min(72rem, 100%);
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+/* ------------------------------------------------------------------- hero */
+
+.spend {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2.5rem;
+  align-items: end;
+  padding-bottom: 1.75rem;
+  border-bottom: 1px solid var(--grid);
+  margin-bottom: 2rem;
+}
+
+.spend h1 {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--dun);
+  margin: 0 0 0.35rem;
+}
+
+.total {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: clamp(2.75rem, 2rem + 4vw, 4.5rem);
+  font-weight: 400;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.total .cents { color: var(--dun); }
+
+.sub { color: var(--dun); font-size: 0.875rem; margin: 0.6rem 0 0; }
+
+.projection { align-self: end; }
+.projection p { margin: 0 0 0.5rem; color: var(--dun); font-size: 0.875rem; }
+.projection .figure {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--cream);
+}
+.projection input {
+  width: 3.5rem;
+  font: inherit;
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--cream);
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--dun);
+  text-align: center;
+  padding: 0 0.15rem;
+}
+.projection input:focus { outline: none; border-bottom-color: var(--cream); }
+
+/* ------------------------------------------------------------------ table */
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+
+th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.8125rem;
+  color: var(--dun);
+  padding: 0 0.75rem 0.6rem 0;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+th.num, td.num { text-align: right; }
+
+td {
+  padding: 0.85rem 0.75rem 0.85rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--grid) 55%, transparent);
+  vertical-align: middle;
+}
+
+.stage { font-weight: 500; width: 30%; min-width: 10rem; }
+.stage small { display: block; font-weight: 400; color: var(--dun); font-size: 0.8125rem; margin-top: 0.15rem; }
+
+.num, .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.state { display: flex; align-items: center; gap: 0.45rem; white-space: nowrap; }
+.state svg { flex-shrink: 0; }
+.state[data-s="running"]  { color: var(--good); }
+.state[data-s="degraded"] { color: var(--warn-s); }
+.state[data-s="failed"]   { color: var(--crit); }
+.state[data-s="idle"], .state[data-s="stopped"], .state[data-s="starting"] { color: var(--dun); }
+
+/* Latency meter: length is the magnitude, the hairline is the one-second mark
+   that separates "keeping up with the speaker" from "falling behind". Colour
+   only appears once that line is crossed, so a green row means nothing needs
+   reading. */
+.meter { position: relative; width: 8rem; height: 0.5rem; background: var(--grid); border-radius: 4px; }
+.meter i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px;
+  background: var(--dun);
+  transition: width 0.4s ease;
+}
+.meter[data-over="warn"] i { background: var(--warn-s); }
+.meter[data-over="crit"] i { background: var(--crit); }
+.meter u {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--cream);
+  opacity: 0.4;
+}
+.lat { display: flex; align-items: center; gap: 0.7rem; }
+.lat .vals { font-size: 0.8125rem; color: var(--dun); white-space: nowrap; }
+.lat .vals b { color: var(--cream); font-weight: 500; }
+
+.zero { color: var(--dun-dim); }
+.hot { color: var(--crit); font-weight: 500; }
+
+/* A flex container cannot be a table cell without breaking vertical alignment,
+   so the row of links lives in a span inside the cell. */
+.links span { display: inline-flex; gap: 0.75rem; font-size: 0.8125rem; }
+.links a { color: var(--dun); text-decoration: none; border-bottom: 1px solid transparent; }
+.links a:hover { color: var(--cream); border-bottom-color: var(--dun); }
+
+.err {
+  margin-top: 1.5rem;
+  padding: 0.85rem 1rem;
+  border-left: 2px solid var(--crit);
+  background: color-mix(in srgb, var(--crit) 8%, transparent);
+  font-size: 0.875rem;
+}
+.err code { font-family: "IBM Plex Mono", monospace; color: var(--dun); }
+
+@media (max-width: 64rem) { .hide-md { display: none; } .meter { width: 6rem; } }
+@media (max-width: 52rem) {
+  .spend { grid-template-columns: 1fr; gap: 1.5rem; }
+  .hide-sm { display: none; }
+  .meter { width: 4.5rem; }
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <a class="mark" href="/">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M21.4 3.6 16.9 5.9A8.2 8.2 0 0 0 4 12.6c0 2 .7 3.8 1.9 5.2L3.1 20.4h9.1a8.2 8.2 0 0 0 7.5-11.6l1.7-5.2ZM15 8.9a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2Z"/></svg>
+    <span>Calandria</span>
+  </a>
+  <span class="spacer"></span>
+  <span id="conn" class="mono" style="font-size:.8125rem;color:var(--dun)">conectando…</span>
+</header>
+
+<main>
+  <section class="spend">
+    <div>
+      <h1>Gastado hasta ahora</h1>
+      <p class="total" id="total">$0<span class="cents">.00000</span></p>
+      <p class="sub" id="sub">sin audio procesado todavía</p>
+    </div>
+    <div class="projection">
+      <p>Al ritmo medido, una conferencia de
+        <input id="pStages" type="number" min="1" max="200" value="10" aria-label="escenarios"> escenarios
+        durante <input id="pHours" type="number" min="1" max="200" value="10" aria-label="horas"> horas costaría
+      </p>
+      <span class="figure" id="projection">—</span>
+    </div>
+  </section>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Sala</th>
+        <th>Estado</th>
+        <th>Latencia al subtítulo <span style="font-weight:400">p50/p95 ms</span></th>
+        <th class="num hide-sm">Audio</th>
+        <th class="num hide-sm">Líneas</th>
+        <th class="num hide-md">Rotaciones</th>
+        <th class="num">Errores</th>
+        <th class="num">Costo</th>
+        <th class="hide-sm">Transcripción</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div id="errors"></div>
+</main>
+
+<script>
+const GLYPH = {
+  running:  '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="currentColor"/></svg>',
+  degraded: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5 11 10.5H1z" fill="currentColor"/></svg>',
+  failed:   '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  stopped:  '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor"/></svg>',
+  starting: '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.8" fill="none" stroke-dasharray="3 2.5"/></svg>',
+  idle:     '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="3.6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>',
+};
+const WORD = {
+  running: "en vivo", degraded: "degradado", failed: "caído",
+  stopped: "detenido", starting: "iniciando", idle: "inactivo",
+};
+
+const LIVE_BUDGET = 1000;   // ms. Past a second, a reader stops keeping up.
+const METER_FULL = 3000;    // ms the meter spans end to end.
+
+const $ = (id) => document.getElementById(id);
+const state = new Map();
+let totals = {};
+
+function money(v) {
+  const s = (v || 0).toFixed(5);
+  const [whole, frac] = s.split(".");
+  return `$${whole}<span class="cents">.${frac}</span>`;
+}
+
+function meter(p50, p95) {
+  if (p50 == null) return '<span class="zero">—</span>';
+  const pct = Math.min(p95 ?? p50, METER_FULL) / METER_FULL * 100;
+  const over = (p95 ?? p50) > LIVE_BUDGET * 2 ? "crit" : (p95 ?? p50) > LIVE_BUDGET ? "warn" : "";
+  const mark = LIVE_BUDGET / METER_FULL * 100;
+  return `<div class="lat">
+    <div class="meter" data-over="${over}" title="p50 ${p50} ms · p95 ${p95 ?? "—"} ms · la marca es 1 s">
+      <i style="width:${pct.toFixed(1)}%"></i><u style="left:${mark}%"></u>
+    </div>
+    <span class="vals"><b>${p50}</b>&thinsp;/&thinsp;${p95 ?? "—"}</span>
+  </div>`;
+}
+
+function render() {
+  const rows = [...state.values()].sort((a, b) => a.session_id.localeCompare(b.session_id));
+  $("rows").innerHTML = rows.map((s) => `
+    <tr>
+      <td class="stage">${esc(s.title)}<small>${esc(s.session_id)} · ${esc(s.source_language)} → ${s.targets.map(esc).join(", ") || "—"}</small></td>
+      <td><span class="state" data-s="${s.state}">${GLYPH[s.state] || GLYPH.idle}${WORD[s.state] || s.state}</span></td>
+      <td>${meter(s.latency_p50, s.latency_p95)}</td>
+      <td class="num mono hide-sm">${fmtDur(s.audio_seconds)}</td>
+      <td class="num mono hide-sm">${s.captions_final}</td>
+      <td class="num mono hide-md ${s.rotations ? "" : "zero"}">${s.rotations}</td>
+      <td class="num mono ${s.errors ? "hot" : "zero"}">${s.errors}</td>
+      <td class="num mono">${money(s.cost_usd)}</td>
+      <td class="links hide-sm"><span>
+        <a href="/api/sessions/${encodeURIComponent(s.session_id)}/transcript.srt?lang=${encodeURIComponent(s.source_language)}">srt</a>
+        <a href="/api/sessions/${encodeURIComponent(s.session_id)}/transcript.vtt?lang=${encodeURIComponent(s.source_language)}">vtt</a>
+        <a href="/api/sessions/${encodeURIComponent(s.session_id)}/transcript.txt?lang=${encodeURIComponent(s.source_language)}">txt</a>
+      </span></td>
+    </tr>`).join("");
+
+  const failing = rows.filter((s) => s.last_error);
+  $("errors").innerHTML = failing.map((s) => `
+    <div class="err"><strong>${esc(s.title)}</strong> — <code>${esc(s.last_error)}</code></div>`).join("");
+
+  $("total").innerHTML = money(totals.cost_usd);
+  const hours = (totals.audio_seconds || 0) / 3600;
+  $("sub").textContent = totals.audio_seconds
+    ? `${fmtDur(totals.audio_seconds)} de audio en ${totals.running} de ${totals.sessions} salas activas`
+    : "sin audio procesado todavía";
+  project();
+}
+
+function project() {
+  const rate = totals.cost_per_stage_hour;
+  const el = $("projection");
+  if (!rate) {
+    el.textContent = "—";
+    el.title = "Hace falta al menos un minuto de audio para medir un ritmo real.";
+    return;
+  }
+  const n = Math.max(1, +$("pStages").value || 1);
+  const h = Math.max(1, +$("pHours").value || 1);
+  el.textContent = `$${(rate * n * h).toFixed(2)}`;
+  el.title = `Medido: $${rate.toFixed(4)} por escenario-hora, con los idiomas configurados.`;
+}
+$("pStages").oninput = project;
+$("pHours").oninput = project;
+
+function fmtDur(s) {
+  s = Math.round(s || 0);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/status`);
+  ws.onopen = () => { $("conn").textContent = "conectado"; };
+  ws.onclose = () => { $("conn").textContent = "reconectando…"; setTimeout(connect, 2000); };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.snapshot) msg.snapshot.forEach((s) => state.set(s.session_id, s));
+    if (msg.status) state.set(msg.status.session_id, msg.status);
+    if (msg.totals) totals = msg.totals;
+    render();
+  };
+}
+connect();
+</script>
+</body>
+</html>
