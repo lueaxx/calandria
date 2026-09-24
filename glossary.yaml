@@ -1,0 +1,40 @@
+# One glossary per event. It feeds two things at once: the transcriber's
+# vocabulary bias, and the translator's rules. Keep it under ~150 entries --
+# a long list dilutes the bias and makes recognition worse, not better.
+
+# Names and jargon the transcriber should expect to hear.
+terms:
+  - Nerdearla
+  - Konex
+  - Vibeathon
+  - Kubernetes
+  - PostgreSQL
+  - Terraform
+  - observability
+  - nullplatform
+
+# Words that must survive translation untouched, because the slides say them
+# in English and the audience is reading both.
+keep_untranslated:
+  - deployment
+  - pipeline
+  - commit
+  - pull request
+  - open source
+  - framework
+  - backend
+  - frontend
+  - serverless
+  - machine learning
+
+# Exact renderings, when the default translation is wrong for this audience.
+force:
+  "container": "container"
+  "cloud native": "cloud native"
+
+# Speaker names, so they are spelled correctly on screen.
+speakers:
+  - Eduardo Casarero
+  - Thor Schaeff
+  - Omar Sanseviero
+  - Tomás Barreiro

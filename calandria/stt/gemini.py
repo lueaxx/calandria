@@ -1,0 +1,342 @@
+"""Gemini Live streaming transcription, with seamless session rotation.
+
+Three things in here are worth reading before changing anything.
+
+**Rotation.** The API ends a live transcription session after ten minutes. Talks
+run forty. So shortly before the deadline we open a second session, feed both
+the same audio for a few seconds, then retire the first and de-duplicate the
+repeated text at the seam. The audience sees continuous captions; the operator
+sees a counter go up.
+
+**Error propagation.** Both halves of a session -- the sender and the receiver --
+run inside a TaskGroup, so if either dies the other is cancelled and the real
+exception surfaces. This is not tidiness. While building this, a config error
+that the server reported clearly as `1007: Transcription mode SMART is
+incompatible with word timestamps` reached the logs as an unrelated
+`keepalive ping timeout`, because the receiving task's exception was never
+observed. Nothing here may swallow a message from the server.
+
+**Latency.** The server reports `audio_offset` on its voice-activity events:
+the position in the audio where speech actually ended. Cross-referencing that
+with the wall-clock time at which we fed that same position gives the real delay
+between someone speaking and the caption existing. It is the number the audience
+experiences, and it is the only one this file reports.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import time
+from typing import AsyncIterator, Callable
+
+from google import genai
+from google.genai import types
+
+from ..audio.base import AudioChunk
+from .base import SttError, SttEvent
+from .dedup import dedup_overlap, tail_words
+
+log = logging.getLogger("calandria.stt")
+
+_SENTINEL = object()
+
+
+class _LiveSession:
+    """One websocket to the transcription model."""
+
+    def __init__(self, client: genai.Client, model: str, config: types.LiveConnectConfig):
+        self._client = client
+        self._model = model
+        self._config = config
+        self.inq: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self.outq: asyncio.Queue = asyncio.Queue(maxsize=400)
+        self.opened = asyncio.Event()
+        self.error: BaseException | None = None
+        self.go_away = False
+        self.fed_at: dict[float, float] = {}
+        self.audio_seconds = 0.0
+        # Set when this session is promoted after a rotation: the tail of the
+        # retiring session's last final, against which our first final is
+        # de-duplicated.
+        self.pending_dedup: str = ""
+        # A finalized transcript is held here until the server reports where
+        # the speech actually ended. See _flush_pending.
+        self._pending_final: tuple[str, float] | None = None
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._run(), name="live-session")
+
+    def feed(self, chunk: AudioChunk) -> None:
+        if self.inq.full():          # the model is behind; newest audio wins
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self.inq.get_nowait()
+        self.inq.put_nowait(chunk)
+
+    async def aclose(self) -> None:
+        self.inq.put_nowait(_SENTINEL)
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+
+    async def _run(self) -> None:
+        try:
+            async with self._client.aio.live.connect(
+                model=self._model, config=self._config
+            ) as session:
+                self.opened.set()
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(self._send(session))
+                    tg.create_task(self._recv(session))
+        except* Exception as eg:
+            self.error = eg.exceptions[0]
+            log.warning("live session ended: %s: %s",
+                        type(self.error).__name__, self.error)
+        finally:
+            self.opened.set()  # unblock anyone waiting on a session that failed to open
+            with contextlib.suppress(asyncio.QueueFull):
+                self.outq.put_nowait(_SENTINEL)
+
+    async def _send(self, session) -> None:
+        while True:
+            item = await self.inq.get()
+            if item is _SENTINEL:
+                await session.send_realtime_input(audio_stream_end=True)
+                return
+            await session.send_realtime_input(
+                audio=types.Blob(data=item.data, mime_type="audio/pcm;rate=16000")
+            )
+            self.fed_at[round(item.ts_end, 1)] = time.monotonic()
+            self.audio_seconds = item.ts_end
+
+    async def _recv(self, session) -> None:
+        try:
+            async for response in session.receive():
+                now = time.monotonic()
+
+                if response.go_away is not None:
+                    # The server is about to close this session. Rotate early
+                    # rather than wait for the socket to drop.
+                    self.go_away = True
+
+                va = response.voice_activity
+                if va is not None and va.audio_offset is not None:
+                    kind = getattr(va.voice_activity_type, "name", "")
+                    if kind == "ACTIVITY_END":
+                        self._flush_pending(_parse_offset(va.audio_offset))
+
+                sc = response.server_content
+                if not sc:
+                    continue
+
+                interim = sc.interim_input_transcription
+                if interim is not None and interim.text:
+                    # A new hypothesis means the previous utterance is over and
+                    # its end-of-speech marker is not coming.
+                    self._flush_pending(None)
+                    self._push(SttEvent(
+                        text=interim.text, is_final=False, audio_ts=self.audio_seconds
+                    ))
+
+                final = sc.input_transcription
+                if final is not None and final.text:
+                    self._flush_pending(None)
+                    self._pending_final = (final.text, now)
+        finally:
+            self._flush_pending(None)
+
+    def _flush_pending(self, speech_end_offset: float | None) -> None:
+        """Release a held final, timing it against where speech really ended.
+
+        The server sends the transcript first and the end-of-speech marker a
+        beat later. Holding the transcript for that beat is what makes the
+        reported latency the audience's latency: wall-clock now, minus the
+        moment we handed over the audio containing the last word. Using the
+        marker that arrives *before* a transcript would instead measure the
+        length of the sentence, which is not a property of this system at all.
+        """
+        if self._pending_final is None:
+            return
+        text, arrived_at = self._pending_final
+        self._pending_final = None
+
+        audio_ts = self.audio_seconds
+        latency = None
+        if speech_end_offset is not None:
+            audio_ts = speech_end_offset
+            sent_at = self._fed_at_nearest(speech_end_offset)
+            if sent_at is not None:
+                latency = max((arrived_at - sent_at) * 1000, 0.0)
+        self._push(SttEvent(
+            text=text, is_final=True, audio_ts=audio_ts, latency_ms=latency
+        ))
+
+    def _fed_at_nearest(self, offset: float) -> float | None:
+        """When did we hand over the audio at this position?
+
+        Offsets are reported at millisecond resolution while we record one entry
+        per chunk, so an exact hit is not guaranteed; accept the closest chunk
+        within a chunk's width and give up rather than guess beyond that.
+        """
+        key = round(offset, 1)
+        if (hit := self.fed_at.get(key)) is not None:
+            return hit
+        for delta in (0.1, -0.1, 0.2, -0.2):
+            if (hit := self.fed_at.get(round(key + delta, 1))) is not None:
+                return hit
+        return None
+
+    def _push(self, evt: SttEvent) -> None:
+        if self.outq.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self.outq.get_nowait()
+        self.outq.put_nowait(evt)
+
+
+def _parse_offset(value) -> float | None:
+    """`audio_offset` arrives as a duration string such as '15.080s'."""
+    try:
+        return float(str(value).rstrip("s"))
+    except (TypeError, ValueError):
+        return None
+
+
+class GeminiLiveBackend:
+    name = "gemini-live"
+
+    def __init__(
+        self,
+        client: genai.Client,
+        *,
+        model: str = "gemini-3.5-transcribe-live",
+        mode: str = "SMART",
+        word_timestamp: bool = False,
+        language: str | None = None,
+        vocabulary: list[str] | None = None,
+        rotate_after_seconds: float = 480,
+        overlap_seconds: float = 3.0,
+        on_audio_seconds: Callable[[float], None] | None = None,
+        on_rotate: Callable[[], None] | None = None,
+    ) -> None:
+        self._client = client
+        self._model = model
+        self._rotate_after = rotate_after_seconds
+        self._overlap = overlap_seconds
+        self._on_audio_seconds = on_audio_seconds
+        self._on_rotate = on_rotate
+
+        fields: dict = {}
+        if language:
+            # A language hint is not cosmetic: without one the model spends the
+            # opening seconds guessing, and the first interim of a talk can come
+            # back in the wrong language entirely.
+            fields["language_codes"] = [language]
+        if vocabulary:
+            fields["custom_vocabulary"] = vocabulary
+        if mode:
+            fields["mode"] = mode
+        if word_timestamp:
+            fields["word_timestamp"] = True
+
+        self._config = types.LiveConnectConfig(
+            response_modalities=["TEXT"],
+            input_audio_transcription=types.AudioTranscriptionConfig(**fields),
+        )
+
+    def _new_session(self) -> _LiveSession:
+        s = _LiveSession(self._client, self._model, self._config)
+        s.start()
+        return s
+
+    async def transcribe(self, frames: AsyncIterator[AudioChunk]) -> AsyncIterator[SttEvent]:
+        primary = self._new_session()
+        secondary: _LiveSession | None = None
+        rotation_started_at: float | None = None  # audio ts when overlap began
+        session_started_ts = 0.0
+        last_final_tail = ""
+
+        try:
+            async for chunk in frames:
+                primary.feed(chunk)
+                if secondary is not None:
+                    secondary.feed(chunk)
+
+                if self._on_audio_seconds:
+                    self._on_audio_seconds(chunk.ts_end - chunk.ts_start)
+
+                age = chunk.ts_end - session_started_ts
+                if secondary is None and (age >= self._rotate_after or primary.go_away):
+                    log.info("rotating live session at %.1fs of audio", chunk.ts_end)
+                    secondary = self._new_session()
+                    rotation_started_at = chunk.ts_end
+
+                # Drain whatever the *primary* has produced. The secondary's
+                # output is deliberately discarded during the overlap: both are
+                # hearing the same words, and showing them twice is exactly the
+                # artefact rotation exists to avoid.
+                for evt in _drain(primary.outq):
+                    if evt is _SENTINEL:
+                        continue
+                    evt = _apply_pending_dedup(primary, evt)
+                    if not evt.text.strip():
+                        continue  # the seam consumed it entirely
+                    if evt.is_final:
+                        last_final_tail = tail_words(evt.text)
+                    yield evt
+
+                if (
+                    secondary is not None
+                    and rotation_started_at is not None
+                    and chunk.ts_end - rotation_started_at >= self._overlap
+                ):
+                    await primary.aclose()
+                    for evt in _drain(secondary.outq):
+                        pass  # anything buffered mid-overlap was already shown
+                    primary, secondary = secondary, None
+                    session_started_ts = chunk.ts_end
+                    rotation_started_at = None
+                    primary.pending_dedup = last_final_tail
+                    if self._on_rotate:
+                        self._on_rotate()
+
+                if primary.error is not None:
+                    raise SttError(str(primary.error)) from primary.error
+
+            # Source exhausted: let the model finalise its tail.
+            primary.inq.put_nowait(_SENTINEL)
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                try:
+                    evt = await asyncio.wait_for(primary.outq.get(), timeout=2)
+                except asyncio.TimeoutError:
+                    break
+                if evt is _SENTINEL:
+                    break
+                yield _apply_pending_dedup(primary, evt)
+            if primary.error is not None:
+                raise SttError(str(primary.error)) from primary.error
+        finally:
+            await primary.aclose()
+            if secondary is not None:
+                await secondary.aclose()
+
+
+def _apply_pending_dedup(session: _LiveSession, evt: SttEvent) -> SttEvent:
+    """Trim the first final of a freshly promoted session against the seam."""
+    pending = session.pending_dedup
+    if pending and evt.is_final:
+        evt.text = dedup_overlap(pending, evt.text)
+        session.pending_dedup = ""
+    return evt
+
+
+def _drain(q: asyncio.Queue) -> list:
+    out = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except asyncio.QueueEmpty:
+            return out

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.scratch/
+.env
+*.egg-info/
+.pytest_cache/
+transcripts/
+samples/*.wav
+!samples/README.md
+transcripts/

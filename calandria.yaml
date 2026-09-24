@@ -1,0 +1,60 @@
+# Calandria - one file describes the whole conference.
+#
+# Everything here is optional. Delete any section to accept the default; the
+# shortest useful config is a single stage under `sessions`.
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+# 'aistudio' uses GEMINI_API_KEY. 'vertex' uses a Google Cloud project, which
+# is how you spend Cloud credits -- since March 2026 those no longer apply to
+# AI Studio keys.
+provider: aistudio
+
+# 'memory' for a single process. Point it at redis:// to run several replicas
+# behind a load balancer; nothing else changes. See SCALING.md.
+bus: memory
+
+stt:
+  backend: gemini              # 'fake' runs the whole system with no API key
+  model: gemini-3.5-transcribe-live
+  mode: SMART                  # SMART removes filler words; VERBATIM keeps them
+  language_hint: true          # materially faster lock-on than auto-detect
+  rotate_after_seconds: 480    # sessions are capped at 10 min; rotate before that
+  overlap_seconds: 3
+  fallback_enabled: true       # degrade to chunked transcription rather than go dark
+
+translation:
+  enabled: true
+  model: gemini-3.5-flash-lite
+  context_segments: 3          # previous lines sent for continuity
+
+features:
+  viewer: true
+  overlay: true                # /overlay, a transparent browser source for OBS
+  dashboard: true              # /dashboard, for the production team
+  export: true                 # SRT / VTT / TXT when a talk ends
+  cost_tracking: true
+  catchup_buffer: 200          # lines a late joiner can scroll back through
+
+glossary: ./glossary.yaml
+
+sessions:
+  - id: keynote
+    title: "Main stage - Opening keynote"
+    source:
+      type: file               # file | stream | mic
+      path: ./samples/keynote-en.wav
+      loop: true
+    source_language: en
+    targets: [es, pt]
+
+  - id: track-2
+    title: "Track 2 - Observability"
+    source:
+      type: file
+      path: ./samples/keynote-en.wav
+      loop: true
+    source_language: en
+    targets: [es]
