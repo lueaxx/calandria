@@ -136,6 +136,13 @@ function connect() {
   if (ws) { ws.onclose = null; ws.close(); }
   inner.innerHTML = "";
   settled.clear();
+  // pairs maps a sequence number to the block element showing it. Emptying the
+  // DOM above does not empty the map, so without this a caption arriving after
+  // a stage or language change finds its old entry and writes into an element
+  // that is no longer in the page -- invisible, with nothing logged, and fixed
+  // by a reload, which is what makes it look like a loading problem.
+  pairs.clear();
+  autoCandidates.clear();
   utterance = null;
   pinned = true;
   current = { session, lang };
