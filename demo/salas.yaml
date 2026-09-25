@@ -23,17 +23,20 @@ translation:
 glossary: ./glossary.yaml
 
 sessions:
+  # Estas dos declaran su idioma. Detectarlo cuesta un enganche al principio de
+  # la charla -- la primera frase paga y las siguientes no -- y en un evento con
+  # programa conocido esa informacion ya la tenes, asi que regalarla no rinde.
   - id: sala-1
-    title: "Sala 1"
+    title: "Sala 1 (español)"
     source: { type: mic }
-    source_language: auto
-    targets: [es, en, pt, fr, de, it]
+    source_language: es
+    targets: [en, pt, fr, de, it]
 
   - id: sala-2
-    title: "Sala 2"
+    title: "Sala 2 (inglés)"
     source: { type: mic }
-    source_language: auto
-    targets: [es, en, pt, fr, de, it]
+    source_language: en
+    targets: [es, pt, fr, de, it]
 
   - id: sala-3
     title: "Sala 3"
