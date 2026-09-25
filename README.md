@@ -15,6 +15,9 @@ while it does it.
 docker compose up          →  http://localhost:8080
 ```
 
+[**Three demos, each one command**](demo/README.md) — the first needs no
+credentials at all. [Resumen en castellano](docs/RESUMEN.md).
+
 ---
 
 ## What it does
