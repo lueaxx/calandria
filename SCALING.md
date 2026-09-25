@@ -4,6 +4,37 @@ Short version: **one process handles more stages than most conferences have.**
 Reach for Redis when you need redundancy or more audience than one box can hold
 sockets for, not because you added a stage.
 
+## Measured: 100 stages and 400 viewers, one process
+
+```
+python scripts/loadtest.py --stages 100 --viewers 400
+```
+
+| | |
+|---|---|
+| stages | **100** |
+| viewer WebSockets | **400** (37,196 captions delivered) |
+| CPU | **18.6% of one core** — 0.8% of a 24-core machine |
+| memory, whole tree | 2.3 GB |
+| publish → viewer | **p50 0.8 ms · p95 2.3 ms** |
+| per stage | **0.19% of a core · 23 MB** |
+
+The cost per stage holds steady as the count rises, which is the property that
+matters:
+
+| stages | CPU per stage | memory per stage |
+|---|---|---|
+| 20 | 0.23% | 26 MB |
+| 50 | 0.29% | 24 MB |
+| 100 | 0.19% | 23 MB |
+
+**What this measures, and what it does not.** The load test runs the `fake`
+transcription backend, so it costs nothing and needs no credentials, and it
+measures *the process*: decoding audio, moving captions through the bus, and
+serving sockets. It does not measure the model's own concurrency — that is a
+quota question, answered by your API tier, and in practice it binds long before
+this machine does. Plan for the quota; the process is not your problem.
+
 ## What a stage actually costs a process
 
 Measured against the live API, pushing audio into a transcription session:

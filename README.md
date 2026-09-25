@@ -451,8 +451,13 @@ Both live in `calandria/stt/gemini.py`.
 
 ## Scaling
 
-One process, in-memory bus, is the default and carries well over a dozen stages
-— pushing audio into a live session costs well under 1% of a core per stage.
+One process, in-memory bus, is the default. Measured with
+`scripts/loadtest.py`: **100 stages and 400 viewer sockets on 18.6% of one
+core**, 23 MB per stage, captions reaching a real client 0.8 ms after
+publication. The cost per stage stays flat from 20 to 100.
+
+That measures the process. The model's own concurrency is a quota question and
+binds long before the machine does.
 
 Beyond that, set `bus: redis://host:6379` and run several replicas. Captions
 are published to Redis, so any replica can serve any viewer and a reconnecting
