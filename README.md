@@ -367,6 +367,33 @@ sessions:
     targets: [es, pt]
 ```
 
+A stage can also decline to name its language:
+
+```yaml
+sessions:
+  - id: track-2
+    title: "Track 2"
+    source: { type: mic }
+    source_language: auto          # detected per utterance
+    targets: [es, en, pt, fr, de, it]
+```
+
+`auto` suits a bilingual panel, a question from the floor in another language,
+or simply an event whose programme is not in the language a config would have
+named. Three things follow from it. The transcriber sends no language hint,
+because a hint that cannot be stood behind is worse than none -- the model
+reconciles the label against what it actually hears -- at the cost of a beat of
+lock-on at the start of a talk. The translator switches to a prompt that expects
+the language to change between lines, and repeats a line already in the target
+language unchanged rather than paraphrasing it, since a rewrite reads to the
+audience as a transcription error. And a target matching the source is no longer
+dropped: that removal saves a pointless call when the source is known, and with
+an unknown source would silently delete an audience's only option.
+
+`demo/salas.yaml` runs four such stages, each translating into six languages.
+Stages are numbered rather than language-typed, which is the shape a real
+multi-track event wants.
+
 The full set, with defaults, is in [`calandria.example.yaml`](calandria.example.yaml).
 Notable knobs:
 

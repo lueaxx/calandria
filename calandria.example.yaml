@@ -60,4 +60,7 @@ sessions:
       path: ./samples/charla-es.wav
       loop: true
     source_language: es
+    # ...or 'auto' to detect it per utterance, for a stage whose language is not
+    # fixed: a bilingual panel, a question from the floor, an event whose
+    # programme this file cannot know. See demo/salas.yaml.
     targets: [en]
