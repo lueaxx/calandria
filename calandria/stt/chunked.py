@@ -25,6 +25,7 @@ from google import genai
 from google.genai import types
 
 from ..audio.base import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH, AudioChunk
+from ..transient import is_transient
 from .base import SttError, SttEvent
 
 log = logging.getLogger("calandria.stt")
@@ -34,6 +35,25 @@ PROMPT = (
     "preamble, no speaker labels and no timestamps. If there is no intelligible "
     "speech, output nothing at all."
 )
+
+
+def _transcript_of(response) -> str:
+    """Pull the transcript out of the response.
+
+    This model answers with an `audio_transcription` part rather than plain
+    text, so `response.text` comes back empty and the SDK prints a warning
+    about non-text parts to stderr. Reading the wrong field silently produced
+    nothing at all -- and only on the fallback path, which nothing exercises
+    until the day it is needed.
+    """
+    for candidate in response.candidates or []:
+        for part in (candidate.content.parts if candidate.content else []) or []:
+            transcription = getattr(part, "audio_transcription", None)
+            if transcription is not None and getattr(transcription, "text", None):
+                return transcription.text
+            if getattr(part, "text", None):
+                return part.text
+    return response.text or ""
 
 
 def pcm_to_wav(pcm: bytes) -> bytes:
@@ -57,11 +77,13 @@ class ChunkedBackend:
         language: str | None = None,
         vocabulary: list[str] | None = None,
         window_seconds: float = 4.0,
+        retry_budget_seconds: float = 25.0,
         on_audio_seconds=None,
     ) -> None:
         self._client = client
         self._model = model
         self._window = window_seconds
+        self._retry_budget = retry_budget_seconds
         self._on_audio_seconds = on_audio_seconds
 
         hint = []
@@ -74,10 +96,13 @@ class ChunkedBackend:
                 "These terms appear in this talk and must be spelled exactly: "
                 + ", ".join(vocabulary[:80])
             )
-        self._config = types.GenerateContentConfig(
-            system_instruction=" ".join([PROMPT, *hint]),
-            temperature=0.0,
-        )
+        # The instruction travels with the audio rather than as a system
+        # instruction: gemini-3.5-transcribe rejects those outright with
+        # "Developer instruction is not enabled for this model". This path only
+        # runs when streaming has already failed, so a mistake here is invisible
+        # until the worst possible moment.
+        self._instruction = " ".join([PROMPT, *hint])
+        self._config = types.GenerateContentConfig(temperature=0.0)
 
     async def transcribe(self, frames: AsyncIterator[AudioChunk]) -> AsyncIterator[SttEvent]:
         buf = bytearray()
@@ -119,18 +144,31 @@ class ChunkedBackend:
     async def _transcribe_window(
         self, pcm: bytes, audio_ts: float, started_wall: float
     ) -> SttEvent | None:
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=[
-                    types.Part.from_bytes(data=pcm_to_wav(pcm), mime_type="audio/wav"),
-                ],
-                config=self._config,
-            )
-        except Exception as exc:
-            raise SttError(f"chunked transcription failed: {exc}") from exc
+        # This backend only runs after streaming has already failed, which is
+        # precisely when transient errors cluster. Giving up on the first 429
+        # would mean the recovery path needs its own recovery path.
+        deadline = time.monotonic() + self._retry_budget
+        delay = 1.0
+        while True:
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=[
+                        types.Part.from_bytes(data=pcm_to_wav(pcm), mime_type="audio/wav"),
+                        types.Part.from_text(text=self._instruction),
+                    ],
+                    config=self._config,
+                )
+                break
+            except Exception as exc:
+                if not is_transient(exc) or time.monotonic() + delay > deadline:
+                    raise SttError(f"chunked transcription failed: {exc}") from exc
+                log.debug("chunked window hit a transient error, retrying in "
+                          "%.1fs: %s", delay, exc)
+                await asyncio.sleep(delay)
+                delay *= 2
 
-        text = (response.text or "").strip()
+        text = _transcript_of(response).strip()
         if not text:
             return None
         return SttEvent(

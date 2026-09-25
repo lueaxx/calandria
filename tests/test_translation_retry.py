@@ -10,7 +10,8 @@ import asyncio
 
 import pytest
 
-from calandria.translate.gemini import TranslationFanout, _is_transient
+from calandria.transient import is_transient as _is_transient
+from calandria.translate.gemini import TranslationFanout
 
 
 class FlakyTranslator:

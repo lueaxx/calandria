@@ -300,10 +300,17 @@ measurement that caught it.
 ### It degrades instead of going dark
 
 A live event has no maintenance window. If the streaming session cannot be kept
-alive, Calandria falls back to chunked transcription: latency goes from under a
-second to roughly the buffer length, the dashboard marks the stage
-**degraded**, and the captions keep coming. Set `stt.fallback_enabled: false` if
-you would rather it stop.
+alive, Calandria falls back to chunked transcription: the dashboard marks the
+stage **degraded** and the captions keep coming. Measured on the fallback path,
+end to end: **~12 s** behind the speaker with a 10 s window. That is a bad
+number and a survivable one, which is the trade this path exists to make. Set
+`stt.fallback_enabled: false` if you would rather it stop.
+
+The fallback deliberately runs a general multimodal model rather than the
+dedicated transcriber. For a recovery path availability beats accuracy, and
+`gemini-3.5-transcribe` allows 25 requests a day on the free tier and is not
+published on Vertex at all — the worst-provisioned model in the system to
+depend on at the moment something else has already broken.
 
 ---
 

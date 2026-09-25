@@ -203,3 +203,49 @@ async def test_a_looping_file_marks_where_it_starts_over():
 
     assert marks, "a looping source never signalled that it started over"
     assert abs(marks[0] - duration) < 1.0, f"loop marked at {marks[0]:.1f}s, file is {duration:.1f}s"
+
+
+def test_the_fallback_reads_the_transcription_part():
+    """gemini-3.5-transcribe answers with an `audio_transcription` part, not
+    plain text, so reading response.text returns nothing at all -- silently,
+    and only on the path that runs when streaming has already failed."""
+    from calandria.stt.chunked import _transcript_of
+
+    class Transcription:
+        text = "Good morning everyone."
+
+    class Part:
+        audio_transcription = Transcription()
+        text = None
+
+    class Content:
+        parts = [Part()]
+
+    class Candidate:
+        content = Content()
+
+    class Response:
+        candidates = [Candidate()]
+        text = ""          # what the SDK offers, and what used to be read
+
+    assert _transcript_of(Response()) == "Good morning everyone."
+
+
+def test_the_fallback_still_reads_a_plain_text_response():
+    from calandria.stt.chunked import _transcript_of
+
+    class Part:
+        audio_transcription = None
+        text = "plain"
+
+    class Content:
+        parts = [Part()]
+
+    class Candidate:
+        content = Content()
+
+    class Response:
+        candidates = [Candidate()]
+        text = "plain"
+
+    assert _transcript_of(Response()) == "plain"

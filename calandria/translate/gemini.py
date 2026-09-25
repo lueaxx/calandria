@@ -28,6 +28,8 @@ from collections import deque
 from google import genai
 from google.genai import types
 
+from ..transient import is_transient
+
 log = logging.getLogger("calandria.translate")
 
 LANGUAGE_NAMES = {
@@ -172,7 +174,7 @@ class TranslationFanout:
                     return await self._translators[lang].translate(text)
                 except Exception as exc:
                     last = exc
-                    if not _is_transient(exc) or time.monotonic() + delay > deadline:
+                    if not is_transient(exc) or time.monotonic() + delay > deadline:
                         break
                     log.debug("translation to %s hit a transient error, retrying "
                               "in %.1fs: %s", lang, delay, exc)
@@ -182,19 +184,3 @@ class TranslationFanout:
         log.warning("translation to %s failed: %s", lang, last)
         raise last
 
-
-TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
-
-
-def _is_transient(exc: Exception) -> bool:
-    """Whether retrying this could plausibly succeed.
-
-    A quota or capacity error clears on its own. A malformed request or a bad
-    key does not, and retrying it just burns the deadline that a recoverable
-    error would have used.
-    """
-    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    if code in TRANSIENT_STATUSES:
-        return True
-    text = str(exc)
-    return any(str(s) in text for s in TRANSIENT_STATUSES) or "UNAVAILABLE" in text

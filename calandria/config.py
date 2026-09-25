@@ -81,7 +81,13 @@ class SttConfig(BaseModel):
     # If the streaming backend cannot be kept alive, fall back to chunked
     # transcription rather than going silent. Higher latency, still captions.
     fallback_enabled: bool = True
-    fallback_model: str = "gemini-3.5-transcribe"
+    # A general multimodal model rather than the dedicated transcriber. For a
+    # recovery path, availability beats accuracy: gemini-3.5-transcribe allows
+    # 25 requests a day on the free tier and is not published on Vertex at all,
+    # which makes it the worst-provisioned model in the system to depend on at
+    # the exact moment something else has already failed. Proper nouns suffer a
+    # little; the glossary in the prompt takes some of that back.
+    fallback_model: str = "gemini-3.5-flash-lite"
     fallback_chunk_seconds: float = 4.0
 
     @model_validator(mode="after")
