@@ -2,6 +2,9 @@
 
 **Live transcription and translation for conferences, at conference scale.**
 
+[calandria overview](https://lueaxx.github.io/calandria/) · what it does and
+what it costs, with the measurements behind both.
+
 The calandria is a South American songbird that imitates the call of whatever
 other bird it hears. This one listens to a stage and repeats it in your language.
 
