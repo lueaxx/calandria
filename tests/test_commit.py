@@ -7,7 +7,7 @@ releasing it at all. The tests below pin down each.
 
 import pytest
 
-from calandria.stt.commit import SentenceCommitter, split_sentences, word_count
+from calandria.stt.commit import SentenceCommitter, split_sentences, tidy_spacing, word_count
 from calandria.stt.dedup import normalise
 
 
@@ -449,3 +449,95 @@ def test_alignment_does_not_swallow_a_genuinely_different_final():
     c.finish("We deployed on Friday without any incident at all.")
     out = c.finish("The database migration afterwards took four entire hours to finish.")
     assert "database migration" in out
+
+
+def test_a_finished_sentence_does_not_wait_for_the_next_one():
+    """Measured live: translations lagged by the length of the sentence.
+
+    A sentence used to be released only once another started, which tied its
+    latency to when the speaker chose to speak again. If the model has
+    punctuated it and stopped revising it, it is finished.
+    """
+    c = SentenceCommitter(stable_seconds=0.7)
+    assert c.offer("Buenos días y gracias por venir.", now=0.0)[0] == ""
+    assert c.offer("Buenos días y gracias por venir.", now=0.3)[0] == ""
+    assert c.offer("Buenos días y gracias por venir.", now=0.9)[0] == \
+        "Buenos días y gracias por venir."
+
+
+def test_a_phrase_still_growing_is_held():
+    c = SentenceCommitter(stable_seconds=0.7)
+    assert c.offer("Buenos días y gracias", now=0.0)[0] == ""
+    assert c.offer("Buenos días y gracias por venir", now=0.5)[0] == ""   # still growing
+    assert c.offer("Buenos días y gracias por venir a esta", now=1.0)[0] == ""
+
+
+def test_a_phrase_that_stops_growing_is_released_without_punctuation():
+    """Measured live: the model took seven seconds to add a full stop to a
+    phrase it had already finished transcribing. Waiting for punctuation
+    inherits all seven, and the words had stopped changing long before."""
+    c = SentenceCommitter(stable_seconds=0.7)   # unpunctuated waits 2x that
+    assert c.offer("Yo voy a estar hablando y quiero ver", now=0.0)[0] == ""
+    assert c.offer("Yo voy a estar hablando y quiero ver", now=0.9)[0] == ""
+    assert c.offer("Yo voy a estar hablando y quiero ver", now=1.6)[0] ==         "Yo voy a estar hablando y quiero ver"
+
+
+def test_a_stray_word_going_quiet_is_not_sent_on_its_own():
+    c = SentenceCommitter(stable_seconds=0.7)
+    assert c.offer("Hola", now=0.0)[0] == ""
+    assert c.offer("Hola", now=5.0)[0] == ""      # too short to be a phrase
+
+
+def test_the_trailing_fragment_is_still_held_when_the_model_carries_on():
+    """The stability rule adds a way to release a sentence; it removes none.
+
+    A sentence followed by more text still goes out immediately, and the
+    fragment that follows it is still held back for revision.
+    """
+    c = SentenceCommitter(stable_seconds=0.7)
+    assert c.offer("Hola.", now=0.0)[0] == ""          # nothing after it yet
+    settled, tail = c.offer("Hola. Buenos", now=0.5)
+    assert settled == "Hola."                          # released by the next one
+    assert tail == "Buenos"                            # and the fragment waits
+    assert c.offer("Hola. Buenos", now=0.9)[0] == ""   # nothing new to add
+
+
+def test_closing_punctuation_after_a_full_stop_still_counts():
+    c = SentenceCommitter(stable_seconds=0.5)
+    c.offer('Dijo "esto es todo."', now=0.0)
+    assert c.offer('Dijo "esto es todo."', now=0.8)[0] == 'Dijo "esto es todo."'
+
+
+def test_a_run_on_final_gets_its_space_back():
+    """Observed live: Gemini finals arrive as "tardes.Muy buenas tardes".
+
+    Text the committer releases is rebuilt from split sentences and so is
+    always spaced, but a final emitted straight from the model skips that
+    path and reaches the projector as a run-on.
+    """
+    assert (tidy_spacing("Muy buenas tardes.Muy buenas tardes a todos.")
+            == "Muy buenas tardes. Muy buenas tardes a todos.")
+
+
+def test_a_run_on_comma_gets_its_space_back():
+    # Same defect, different mark: "And they were like, okay,go to Buenos Aires"
+    # came off a live run of a real talk.
+    assert tidy_spacing("okay,go to Buenos Aires") == "okay, go to Buenos Aires"
+    assert tidy_spacing("Bueno,vamos;ahora:asi") == "Bueno, vamos; ahora: asi"
+
+
+def test_tidy_spacing_leaves_numbers_and_ellipses_alone():
+    # The same reason split_sentences refuses to break "Apache 2.0": a talk is
+    # full of version numbers, and a stray space inside one is as wrong as a
+    # missing one between sentences.
+    assert tidy_spacing("Apache 2.0 sobre gemini-3.5") == "Apache 2.0 sobre gemini-3.5"
+    # Thousands separator and the European decimal comma both look exactly like
+    # the defect this repairs, which is why the digit exclusion is on both sides.
+    assert tidy_spacing("Son 1,000 personas y 1,5 metros") == "Son 1,000 personas y 1,5 metros"
+    assert tidy_spacing("Esperen... ya viene") == "Esperen... ya viene"
+    assert tidy_spacing('Fin."Y una cita"') == 'Fin."Y una cita"'
+
+
+def test_tidy_spacing_changes_nothing_when_spacing_is_already_right():
+    good = "Ya esta. Bien separado. Sin tocar."
+    assert tidy_spacing(good) == good

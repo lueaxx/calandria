@@ -374,7 +374,7 @@ Notable knobs:
 |---|---|---|
 | `stt.backend` | `gemini` | `fake` runs everything with no credentials |
 | `stt.mode` | `SMART` | removes filler words; `VERBATIM` keeps them |
-| `stt.rotate_after_seconds` | `480` | must stay under the API's 600 s session cap |
+| `stt.rotate_after_seconds` | `75` | sized against session drift, not the API cap — see below |
 | `stt.language_hint` | `true` | materially faster lock-on than auto-detect |
 | `stt.commit_sentences` | `true` | translate per sentence instead of per pause |
 | `source.loop` | `false` | replay a file forever; each pass starts a fresh session |
@@ -383,6 +383,35 @@ Notable knobs:
 | `translation.context_segments` | `3` | previous lines sent for continuity |
 | `features.*` | all on | every feature can be switched off |
 | `features.catchup_buffer` | `200` | lines a late joiner can scroll back through |
+
+### Why sessions rotate every 75 seconds
+
+The Live API caps a transcription session at 10 minutes, so a talk has to span
+several of them. Calandria opens the replacement early and lets both hear the
+same three seconds, then stitches the seam, so the audience sees no gap.
+
+The *interval* is set by a different problem. A session answers in real time
+when it is young and drifts as it ages. Measured on a live microphone, by the
+end of the first minute interim updates were arriving 9 s apart instead of
+1.3 s, and captions landed **19.5 s** behind the speaker — on the same phrase
+that had been captioned in 1.5 s a minute earlier. Rotating before that sets in
+holds the lag flat:
+
+| | rotation 0 | rotation 1 | rotation 2 |
+|---|---|---|---|
+| source language | 0.1 s | −0.2 to −0.6 s | −0.4 to −0.7 s |
+| translated | 1.2 s | 0.4 to 1.0 s | 0.6 to 1.6 s |
+
+Negative means the caption reaches the audience before the audio clock reaches
+that point, which is what `commit_sentences` buys: a sentence is released when
+the model stops revising it, not when the speaker finally pauses.
+
+Sizing the interval to the API cap instead — the obvious reading, and what an
+earlier version did — leaves an audience reading twenty seconds behind the
+stage for nine of every ten minutes. The cost of rotating often is the overlap:
+two sessions hear the same 3 s each time, so STT audio bills about 4% over the
+wall-clock duration rather than 0.6%. On the measured USD 0.65 per stage-hour
+that is under three cents.
 
 ### The glossary earns its keep
 

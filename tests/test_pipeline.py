@@ -276,3 +276,66 @@ async def test_a_translation_carries_the_sequence_of_what_it_translates(tmp_path
     translated = bus.history(topic_captions("stage", "es"))
     assert translated, "no translation was published"
     assert translated[-1]["seq"] == original.seq
+
+
+async def test_the_gemini_backend_runs_its_loop_without_a_network():
+    """The real backend's hot loop, exercised.
+
+    Every other test drives the fake backend, so a dead reference inside
+    GeminiLiveBackend.transcribe passed the whole suite and only failed once
+    audio reached it -- silently, as captions that never arrived. This feeds it
+    chunks against a stubbed session so the loop body actually runs.
+    """
+    from calandria.stt.gemini import GeminiLiveBackend
+
+    class StubSession:
+        async def send_realtime_input(self, **kw):
+            pass
+
+        async def receive(self):
+            return
+            yield  # pragma: no cover - never reached, keeps this an async gen
+
+    class StubConnect:
+        async def __aenter__(self):
+            return StubSession()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class StubLive:
+        def connect(self, **kw):
+            return StubConnect()
+
+    class StubClient:
+        aio = type("aio", (), {"live": StubLive()})()
+
+    backend = GeminiLiveBackend(StubClient(), language="en", label="stage-0")
+    events = [e async for e in backend.transcribe(ScriptedAudio(2).frames())]
+    assert events == []          # a silent stub produces nothing, and no error
+
+
+async def test_latency_from_the_opening_seconds_is_not_reported(tmp_path):
+    """Start-up cost is not how far behind the audience is reading.
+
+    Opening a session and letting the model settle takes seconds. Most captions
+    carry no latency measurement at all, so the window fills slowly and a
+    couple of start-up samples would sit in the median for many minutes --
+    which reported a stage at 20 s while its captions were arriving in 700 ms.
+    """
+    from calandria.orchestrator import LATENCY_WARMUP_SECONDS
+    from calandria.stt.base import SttEvent
+
+    bus = InMemoryBus()
+    w = _worker(bus, tmp_path)
+    w._fanout = None
+
+    w.status.audio_seconds = 1.0                       # still starting up
+    await w._handle_event(SttEvent(text="Opening.", is_final=True,
+                                   audio_ts=1.0, latency_ms=19000))
+    assert w.status.latency_p50 is None, "a start-up sample reached the dashboard"
+
+    w.status.audio_seconds = LATENCY_WARMUP_SECONDS + 5
+    await w._handle_event(SttEvent(text="Settled.", is_final=True,
+                                   audio_ts=30.0, latency_ms=700))
+    assert w.status.latency_p50 == 700

@@ -78,13 +78,11 @@ class ChunkedBackend:
         vocabulary: list[str] | None = None,
         window_seconds: float = 4.0,
         retry_budget_seconds: float = 25.0,
-        on_audio_seconds=None,
     ) -> None:
         self._client = client
         self._model = model
         self._window = window_seconds
         self._retry_budget = retry_budget_seconds
-        self._on_audio_seconds = on_audio_seconds
 
         hint = []
         if language:
@@ -115,8 +113,6 @@ class ChunkedBackend:
                 window_start = chunk.ts_start
                 window_started_wall = time.monotonic()
             buf.extend(chunk.data)
-            if self._on_audio_seconds:
-                self._on_audio_seconds(chunk.ts_end - chunk.ts_start)
 
             if chunk.ts_end - window_start >= self._window:
                 if pending is not None:

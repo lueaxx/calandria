@@ -1,0 +1,28 @@
+# Una sola sala: tu microfono, a cinco idiomas a la vez.
+#
+# Abri http://127.0.0.1:8080/capture, eleg� la entrada y hablá.
+# Se transcribe UNA vez y el texto se reparte: agregar un idioma es una
+# palabra mas en `targets`.
+
+stt:
+  provider: aistudio          # el modelo de streaming vive aca
+  backend: gemini
+  mode: SMART
+  # Medido en vivo: una sesion arranca respondiendo en tiempo real y a los
+  # ~60-90 segundos va quedando cada vez mas atras (interims cada 9s en vez de
+  # cada 1.3s, subtitulos 19s tarde). La rotacion existia para el limite de 10
+  # minutos de la API; sirve igual de bien contra esto.
+  rotate_after_seconds: 75
+  overlap_seconds: 3
+translation:
+  provider: vertex            # sin techo de 15/min, consume el credito de GCP
+  model: gemini-3.5-flash-lite
+glossary: ./glossary.yaml
+transcript_dir: ./transcripts
+
+sessions:
+  - id: micro
+    title: "Micrófono en vivo"
+    source: { type: mic }
+    source_language: es
+    targets: [en, pt, fr, de, it]

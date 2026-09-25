@@ -326,8 +326,11 @@ class GeminiLiveBackend:
         overlap_seconds: float = 3.0,
         commit_sentences: bool = True,
         commit_max_words: int = 30,
-        on_audio_seconds: Callable[[float], None] | None = None,
+        commit_stable_seconds: float = 0.7,
         on_rotate: Callable[[], None] | None = None,
+        # Which stage this is. A rotation logged without it is unreadable once
+        # more than one stage is running, which is the only case that matters.
+        label: str = "",
     ) -> None:
         self._client = client
         self._model = model
@@ -335,7 +338,8 @@ class GeminiLiveBackend:
         self._overlap = overlap_seconds
         self._commit = commit_sentences
         self._commit_max_words = commit_max_words
-        self._on_audio_seconds = on_audio_seconds
+        self._commit_stable = commit_stable_seconds
+        self._label = label or "stage"
         self._on_rotate = on_rotate
 
         fields: dict = {}
@@ -357,7 +361,8 @@ class GeminiLiveBackend:
         )
 
     def _new_session(self) -> _LiveSession:
-        committer = SentenceCommitter(self._commit_max_words) if self._commit else None
+        committer = (SentenceCommitter(self._commit_max_words, self._commit_stable)
+                     if self._commit else None)
         s = _LiveSession(self._client, self._model, self._config, committer)
         s.start()
         return s
@@ -379,7 +384,7 @@ class GeminiLiveBackend:
                     # A new pass is a new talk, so it gets a new session --
                     # without the overlap a rotation uses, because there is no
                     # seam to repair here.
-                    log.info("source restarted; beginning a fresh session")
+                    log.info("[%s] source restarted; beginning a fresh session", self._label)
                     await primary.aclose()
                     if secondary is not None:
                         await secondary.aclose()
@@ -392,12 +397,9 @@ class GeminiLiveBackend:
                 if secondary is not None:
                     secondary.feed(chunk)
 
-                if self._on_audio_seconds:
-                    self._on_audio_seconds(chunk.ts_end - chunk.ts_start)
-
                 age = chunk.ts_end - session_started_ts
                 if secondary is None and (age >= self._rotate_after or primary.go_away):
-                    log.info("rotating live session at %.1fs of audio", chunk.ts_end)
+                    log.info("[%s] rotating live session at %.1fs of audio", self._label, chunk.ts_end)
                     secondary = self._new_session()
                     rotation_started_at = chunk.ts_end
 

@@ -26,6 +26,7 @@ not be held hostage to a speaker who never reaches a full stop.
 from __future__ import annotations
 
 import re
+import time
 from difflib import SequenceMatcher
 
 from .dedup import dedup_overlap, drop_leading_words, normalise
@@ -36,6 +37,19 @@ _SENTENCE = re.compile(r"[^.!?…]+[.!?…]+[\"')\]]*\s*|[^.!?…]+$", re.UNICOD
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 DEFAULT_MAX_WORDS = 30
+# How long a punctuated sentence must go untouched before it counts as
+# finished. Long enough that the model is done revising, short enough that a
+# speaker who pauses is not left waiting for their own next sentence.
+DEFAULT_STABLE_SECONDS = 0.7
+# An unpunctuated phrase waits this much longer before being released:
+# silence is weaker evidence that a thought is finished than a full stop.
+_UNPUNCTUATED_FACTOR = 2.0
+# Below this a quiet fragment is a stray word, not a phrase worth sending
+# to a translator on its own.
+_MIN_RELEASE_WORDS = 3
+# Closing quotes and brackets may follow a full stop without unfinishing the
+# sentence. Built by concatenation so neither quote character needs escaping.
+TRAILING_MARKS = '"' + "')]}"
 # A ceiling on one utterance, far past anything a person says without a
 # detectable pause. Reaching it means something is wrong, not that a sentence
 # is long.
@@ -60,6 +74,25 @@ _RESTATEMENT_SIMILARITY = 0.85
 _SIMILARITY_MIN_WORDS = 25
 
 
+_MISSING_SPACE = re.compile(r"(?<=[.!?…,;:])(?=[^\s\d.!?…,;:\"')\]])", re.UNICODE)
+
+
+def tidy_spacing(text: str) -> str:
+    """Put a space back after a full stop the model ran into the next sentence.
+
+    Gemini's finals sometimes arrive as "Muy buenas tardes.Muy buenas tardes a
+    todos." Text the committer releases never looks like this, because it is
+    rebuilt by joining split sentences -- but a final emitted straight from the
+    model skips that path, so the audience reads the run-on on a projector.
+
+    Commas are included because the same finals produce "okay,go to Buenos
+    Aires". Digits are excluded on both sides, so "Apache 2.0", "1,000" and the
+    European "1,5" all survive, and so does a run of stops, which leaves an
+    ellipsis typed as "..." alone.
+    """
+    return _MISSING_SPACE.sub(" ", text or "")
+
+
 def split_sentences(text: str) -> list[str]:
     """Split into sentences, keeping their punctuation and dropping padding.
 
@@ -78,6 +111,12 @@ def split_sentences(text: str) -> list[str]:
         else:
             merged.append(part)
     return merged
+
+
+def _ends_a_sentence(text: str) -> bool:
+    """Has the model closed this sentence with terminal punctuation?"""
+    stripped = (text or "").rstrip().rstrip(TRAILING_MARKS).rstrip()
+    return bool(stripped) and stripped[-1] in ".!?…"
 
 
 def word_count(text: str) -> int:
@@ -106,8 +145,15 @@ class SentenceCommitter:
     the model decides to start over.
     """
 
-    def __init__(self, max_words: int = DEFAULT_MAX_WORDS) -> None:
+    def __init__(self, max_words: int = DEFAULT_MAX_WORDS,
+                 stable_seconds: float = DEFAULT_STABLE_SECONDS) -> None:
         self.max_words = max_words
+        self.stable_seconds = stable_seconds
+        # When the running hypothesis last changed. A finished sentence that is
+        # no longer being revised does not need the next one to start before it
+        # can be released.
+        self._last_text: str = ""
+        self._last_change: float = 0.0
         # Where to cut the current utterance. Cleared when the model starts a
         # new one, because the cut point is meaningless across utterances.
         self._released: list[str] = []
@@ -130,6 +176,7 @@ class SentenceCommitter:
         self._released = []
         self._history = []
         self._last = []
+        self._last_text = ""
 
     @property
     def released_words(self) -> int:
@@ -157,7 +204,7 @@ class SentenceCommitter:
             # grow without bound.
             self._released = self._released[-_MAX_UTTERANCE_WORDS:]
 
-    def offer(self, hypothesis: str) -> tuple[str, str]:
+    def offer(self, hypothesis: str, now: float | None = None) -> tuple[str, str]:
         """Take the running hypothesis; return (newly settled, still provisional).
 
         A sentence is settled once another has started after it, because the
@@ -169,6 +216,11 @@ class SentenceCommitter:
         sentences = split_sentences(hypothesis)
         if not sentences:
             return "", ""
+
+        now = time.monotonic() if now is None else now
+        if hypothesis != self._last_text:
+            self._last_text = hypothesis
+            self._last_change = now
 
         flat = normalise(hypothesis)
         covered = self._covered(flat)
@@ -185,9 +237,30 @@ class SentenceCommitter:
 
         settled_upto = len(sentences) - 1        # hold the trailing fragment
         tail = sentences[-1]
+
+        # The trailing sentence is normally held back because it is still being
+        # revised. Two cases say otherwise.
         if settled_upto <= first_new and word_count(tail) > self.max_words:
             settled_upto = len(sentences)        # a run-on; release it anyway
             tail = ""
+        else:
+            # The hypothesis has stopped growing, so the speaker has stopped
+            # adding to this phrase. Punctuation is confirmation, not
+            # information -- and measured live, the model took seven seconds to
+            # add a full stop to a phrase it had already finished transcribing.
+            # Waiting for it inherits all seven.
+            #
+            # A punctuated phrase is released sooner than an unpunctuated one,
+            # because the full stop is real evidence and silence alone is
+            # weaker. Both beat waiting for the next sentence to begin.
+            quiet = now - self._last_change
+            if _ends_a_sentence(tail):
+                ready = quiet >= self.stable_seconds
+            else:
+                ready = quiet >= self.stable_seconds * _UNPUNCTUATED_FACTOR
+            if ready and word_count(tail) >= _MIN_RELEASE_WORDS:
+                settled_upto = len(sentences)
+                tail = ""
 
         if settled_upto <= first_new:
             return "", tail

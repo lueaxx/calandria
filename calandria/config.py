@@ -67,7 +67,19 @@ class SttConfig(BaseModel):
     # A Live transcription session is capped at 10 minutes by the API. Conference
     # talks are not. We open the replacement early and overlap the two so the
     # audience never sees a gap. See stt/gemini.py.
-    rotate_after_seconds: int = 480
+    #
+    # The interval is set by a second problem, not by that cap. Measured on a
+    # live microphone: a session starts answering in real time and drifts as it
+    # ages -- by the end of the first minute, interim updates arrived 9 s apart
+    # instead of 1.3 s, and captions landed 19.5 s behind the speaker. Rotating
+    # before that sets in holds the lag under 2 s across a whole talk. Sizing
+    # this to the 10-minute cap, as an earlier version did, leaves an audience
+    # reading twenty seconds behind the stage for nine of every ten minutes.
+    #
+    # The cost is the overlap: two sessions hear the same 3 s at each rotation,
+    # so STT audio is billed about 4% over the wall-clock duration instead of
+    # 0.6%. On the measured USD 0.65 per stage-hour that is under three cents.
+    rotate_after_seconds: int = 75
     overlap_seconds: float = 3.0
 
     # The model finalises a segment when it hears end of speech, which on a
@@ -77,6 +89,11 @@ class SttConfig(BaseModel):
     # the model has moved past is treated as settled. See stt/commit.py.
     commit_sentences: bool = True
     commit_max_words: int = 30  # release a run-on with no punctuation anyway
+    # How long a punctuated sentence must go untouched before it is treated
+    # as finished. Without this a sentence waits for the *next* one to
+    # start, which ties its latency to when the speaker decides to talk
+    # again rather than to anything this system does.
+    commit_stable_seconds: float = 0.7
 
     # If the streaming backend cannot be kept alive, fall back to chunked
     # transcription rather than going silent. Higher latency, still captions.

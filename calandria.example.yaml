@@ -21,7 +21,7 @@ stt:
   model: gemini-3.5-transcribe-live
   mode: SMART                  # SMART removes filler words; VERBATIM keeps them
   language_hint: true          # materially faster lock-on than auto-detect
-  rotate_after_seconds: 480    # sessions are capped at 10 min; rotate before that
+  rotate_after_seconds: 75     # a session drifts as it ages; rotate before it does
   overlap_seconds: 3
   fallback_enabled: true       # degrade to chunked transcription rather than go dark
 

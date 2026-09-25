@@ -40,6 +40,7 @@ from .glossary import Glossary
 from .metrics import LatencyWindow
 from .stt.base import SttError
 from .stt.chunked import ChunkedBackend
+from .stt.commit import tidy_spacing
 from .stt.fake import FakeBackend
 from .stt.gemini import GeminiLiveBackend
 from .translate.gemini import GeminiTranslator, TranslationFanout
@@ -47,6 +48,9 @@ from .translate.gemini import GeminiTranslator, TranslationFanout
 log = logging.getLogger("calandria")
 
 AUDIO_QUEUE_MAX = 150  # ~15 s at 100 ms chunks
+# Audio a stage must have handled before its latency is reported. Below this
+# the numbers describe starting up, not keeping up.
+LATENCY_WARMUP_SECONDS = 25.0
 LIVE_FAILURES_BEFORE_FALLBACK = 2
 
 
@@ -209,6 +213,8 @@ class SessionWorker:
             overlap_seconds=self.app.stt.overlap_seconds,
             commit_sentences=self.app.stt.commit_sentences,
             commit_max_words=self.app.stt.commit_max_words,
+            commit_stable_seconds=self.app.stt.commit_stable_seconds,
+            label=self.cfg.id,
             on_rotate=self._count_rotation,
         )
 
@@ -291,7 +297,11 @@ class SessionWorker:
         await self._publish_status()
 
     async def _handle_event(self, evt) -> None:
-        text = evt.text.strip()
+        # Normalise here rather than at each use: this is the single point every
+        # source caption passes through, and the translations downstream are
+        # built from this text, so a run-on repaired here is repaired in all
+        # five languages too.
+        text = tidy_spacing(evt.text.strip())
         if not text:
             return
         lang = self.cfg.source_language
@@ -310,7 +320,15 @@ class SessionWorker:
         # Latency is sampled wherever the backend could measure it honestly,
         # which includes the first caption of a speech burst -- so a stage whose
         # speaker never pauses still reports how far behind the text is.
-        if evt.latency_ms is not None:
+        #
+        # The opening seconds are skipped. They include opening the connection
+        # and the model settling, which is start-up cost rather than how far
+        # behind the audience is reading. Most captions carry no measurement at
+        # all (a sentence committed speculatively has no marker to measure
+        # against), so the window fills slowly and a couple of start-up samples
+        # would otherwise sit in the median for many minutes -- reported a
+        # healthy stage at 20 s while its captions were arriving in 700 ms.
+        if evt.latency_ms is not None and self.status.audio_seconds >= LATENCY_WARMUP_SECONDS:
             self.latency.add(evt.latency_ms)
             self.status.latency_p50 = self.latency.p50
             self.status.latency_p95 = self.latency.p95
