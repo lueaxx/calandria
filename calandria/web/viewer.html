@@ -229,7 +229,21 @@ function onMessage(c) {
 }
 
 function onPairMessage(c, side) {
-  if (!c.text || !c.is_final) return;
+  if (!c.text) return;
+  // The original column paints interim text as it is spoken. Waiting for the
+  // sentence to close, as this used to, left the stacked view blank through
+  // every sentence and reading seconds behind the single-language view beside
+  // it -- the one view that shows translation working was the one that looked
+  // broken.
+  //
+  // An interim carries the sequence number the final will take (see
+  // orchestrator._next_seq), so it lands in the same block and is overwritten
+  // in place rather than appended.
+  //
+  // The translation column still shows finals only: translating a hypothesis
+  // that is still being rewritten would spend a call per revision to publish
+  // text about to change.
+  if (!c.is_final && side !== "source") return;
   let entry = pairs.get(c.seq);
   if (!entry) {
     const block = document.createElement("div");
@@ -240,6 +254,9 @@ function onPairMessage(c, side) {
     pairs.set(c.seq, entry);
   }
   entry.block.querySelector(side === "source" ? ".source" : ".target").textContent = c.text;
+  // Mark the original as provisional while it is still being revised, so a
+  // reader can tell a sentence that is still forming from one that has settled.
+  if (side === "source") entry.block.classList.toggle("pending", !c.is_final);
   trim();
   toEnd();
 }

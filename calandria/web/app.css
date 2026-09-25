@@ -196,6 +196,10 @@ button:hover, select:hover { border-color: var(--dun); }
   line-height: 1.4;
 }
 .pair .target { font-size: var(--step); line-height: 1.42; margin: 0; }
+/* The original is still being revised and its translation has not been
+   requested yet. Dimmed rather than hidden: a reader following the
+   original should not have to wait for the sentence to close. */
+.pair.pending .source { opacity: 0.62; }
 
 .jump {
   position: fixed;
