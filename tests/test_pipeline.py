@@ -14,7 +14,7 @@ import pytest
 from calandria.audio.base import AudioChunk
 from calandria.bus.memory import InMemoryBus
 from calandria.config import Config, SessionConfig
-from calandria.events import SessionState, topic_captions
+from calandria.events import Caption, Origin, SessionState, topic_captions
 from calandria.glossary import Glossary
 from calandria.orchestrator import SessionWorker
 from calandria.stt.fake import FakeBackend
@@ -249,3 +249,30 @@ def test_the_fallback_still_reads_a_plain_text_response():
         text = "plain"
 
     assert _transcript_of(Response()) == "plain"
+
+
+async def test_a_translation_carries_the_sequence_of_what_it_translates(tmp_path):
+    """The paired view lines a translation up against its original by sequence
+    number. Per-language counters drift the moment either language drops a
+    line, and every pair after that is shown against the wrong source."""
+    bus = InMemoryBus()
+    w = _worker(bus, tmp_path, targets=["es"])
+
+    published: list = []
+
+    class Echo:
+        async def translate(self, lang, text):
+            return f"[{lang}] {text}"
+
+        @property
+        def languages(self):
+            return ["es"]
+
+    w._fanout = Echo()
+    original = Caption(session_id="stage", lang="en", seq=7, text="Hello there.",
+                       is_final=True, origin=Origin.STT, audio_ts=3.0)
+    await w._translate_and_publish("es", original)
+
+    translated = bus.history(topic_captions("stage", "es"))
+    assert translated, "no translation was published"
+    assert translated[-1]["seq"] == original.seq

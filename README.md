@@ -16,7 +16,9 @@ docker compose up          →  http://localhost:8080
 ```
 
 [**Three demos, each one command**](demo/README.md) — the first needs no
-credentials at all. [Resumen en castellano](docs/RESUMEN.md).
+credentials at all. [Deploying at an event](DEPLOYING.md) ·
+[Resumen en castellano](docs/RESUMEN.md) ·
+[Requisitos del brief contra evidencia](docs/REQUISITOS.md).
 
 ---
 

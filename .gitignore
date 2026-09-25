@@ -18,3 +18,8 @@ transcripts/
 # service account keys - NUNCA commitear
 *.sa.json
 gcp-key.json
+
+# El video del demo contiene metraje de una charla de Nerdearla. Usarlo esta
+# autorizado por las bases; redistribuirlo dentro de un repo Apache-2.0 no.
+video/*.mp4
+video/*.webm

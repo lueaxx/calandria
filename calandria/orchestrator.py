@@ -339,7 +339,12 @@ class SessionWorker:
         caption = Caption(
             session_id=self.cfg.id,
             lang=lang,
-            seq=self._next_seq(lang, final=True),
+            # A translation is the same utterance in another language, not a new
+            # one, so it carries the source's sequence number. Giving it one
+            # from a per-language counter drifts the moment either language
+            # drops a line, and the paired view then shows every translation
+            # against the wrong original.
+            seq=source_caption.seq,
             text=translated,
             is_final=True,
             origin=Origin.MT,
