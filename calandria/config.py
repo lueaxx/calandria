@@ -116,6 +116,7 @@ class TranslationConfig(BaseModel):
 
 class FeatureFlags(BaseModel):
     viewer: bool = True
+    capture: bool = True    # /capture, sends a stage's audio from a browser
     overlay: bool = True
     dashboard: bool = True
     export: bool = True

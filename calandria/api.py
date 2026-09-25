@@ -72,6 +72,16 @@ def create_app(cfg: Config) -> FastAPI:
     async def dashboard():
         return _page("dashboard.html", cfg.features.dashboard)
 
+    @app.get("/capture", include_in_schema=False)
+    async def capture():
+        """Send a stage's audio from the laptop already plugged into the desk.
+
+        The simplest deployment there is: no encoder, no RTMP server, nothing
+        to install, and no CDN between the microphone and the model -- which is
+        what keeps the latency the rest of this system is built for.
+        """
+        return _page("capture.html", cfg.features.capture)
+
     app.mount("/static", StaticFiles(directory=WEB), name="static")
 
     # --------------------------------------------------------------------- api

@@ -394,6 +394,11 @@ all say *deployment* gets captions that say *despliegue*. Keep it under about
 
 ## The three surfaces
 
+**Stage** — `/capture`. Sends a stage's audio from the browser on the machine
+already connected to the sound desk: pick the input, press start, leave the tab
+open. A level meter included, because a muted input and a broken pipeline look
+identical from anywhere else.
+
 **Audience** — `/`. Picks a stage and a language, remembers both. Text size and
 light/dark are adjustable and persist. Scroll back to re-read what you missed;
 "Original + translation" shows both stacked.
@@ -449,6 +454,17 @@ Both live in `calandria/stt/gemini.py`.
 
 ---
 
+## Running it at your event
+
+[DEPLOYING.md](DEPLOYING.md) is written for whoever owns the stages on the day.
+It covers the part that is actually hard — getting audio out of a production
+setup you already have — plus a pre-event checklist, what the dashboard is
+telling you during a talk, and what to collect afterwards.
+
+The short version: open `/capture` on the laptop already plugged into the sound
+desk and press start. No encoder, no RTMP server, nothing to install, and no
+CDN between the microphone and the model.
+
 ## Scaling
 
 One process, in-memory bus, is the default. Measured with
@@ -503,7 +519,10 @@ To caption a real talk instead:
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+**Apache License 2.0** — [OSI-approved](https://opensource.org/license/apache-2-0),
+with an explicit patent grant, which is the reason infrastructure projects tend
+to pick it over MIT. Full text in [LICENSE](LICENSE), copyright and third-party
+notes in [NOTICE](NOTICE).
 
 Use it, fork it, run it at your event. If you do run it at a conference, an
 issue saying how it went would be genuinely useful — most of what is hard here
