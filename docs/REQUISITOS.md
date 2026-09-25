@@ -9,8 +9,8 @@ de enviar, y para responder si un jurado pregunta.
 
 | | Dónde |
 |---|---|
-| Audio en vivo de un escenario | `calandria/audio/` — archivo, stream (RTMP/HLS/SRT) y push desde el navegador |
-| Subtítulos en tiempo real, idioma original | `calandria/stt/gemini.py` — **p50 693 ms** sobre una charla real de Nerdearla |
+| Audio en vivo de un escenario | `calandria/audio/` — archivo, stream (RTMP/HLS/SRT), micrófono, y **otra pestaña del navegador** para transmisiones detrás de login |
+| Subtítulos en tiempo real, idioma original | `calandria/stt/gemini.py` — **p50 693 ms** sobre una charla real de Nerdearla; atraso plano cruzando 4 rotaciones |
 | Traducción en tiempo real al español | `calandria/translate/gemini.py` |
 | *(opcional del desafío)* español → inglés | `demo/offline.yaml`, sala `sala-2` — corre en el video |
 | Varias sesiones en paralelo (5, 10 o más) | **100 salas medidas** con `scripts/loadtest.py`, 18.6% de un núcleo |
@@ -33,7 +33,7 @@ de enviar, y para responder si un jurado pregunta.
 
 | | Dónde |
 |---|---|
-| Audio en vivo de al menos una fuente | Tres: `file`, `stream`, `mic` |
+| Audio en vivo de al menos una fuente | Cuatro: `file`, `stream`, micrófono, y pestaña compartida — las dos últimas por `/ws/ingest` |
 | Audios de prueba en el repo + forma simple de probarlos | `samples/` + `docker compose --profile demo up demo-offline` |
 | Transcripción en tiempo real del idioma original | ✅ |
 | Traducción en tiempo real inglés → español | ✅ |
@@ -48,14 +48,14 @@ de enviar, y para responder si un jurado pregunta.
 | Video demo de 1–2 minutos con audio real de una charla | `video/calandria-demo.mp4` (90 s) + `video/GUION.md` |
 | Repositorio público con licencia open source | <https://github.com/lueaxx/calandria> — Apache 2.0 |
 | README con cómo levantarlo y qué credenciales necesita | `README.md` |
-| Enviado por Devpost antes del 25/9 15:00 UTC | **pendiente** |
+| Enviado por Devpost antes del 25/9 17:00 UTC *(prorrogado desde las 15:00)* | **pendiente** |
 
 ---
 
 ## Cómo verificar cualquier número de este repo
 
 ```bash
-pytest                              # 117 tests
+pytest                              # 134 tests
 python scripts/measure_accuracy.py  # precisión contra transcripción de referencia
 python scripts/loadtest.py --stages 100 --viewers 400
 docker compose --profile demo up demo-offline   # sin credenciales
@@ -70,3 +70,6 @@ docker compose --profile demo up demo-offline   # sin credenciales
   línea repetida. Sobre audio real quedó en **6% de los pares de captions**.
 - Las cien salas miden **el proceso**: decodificación, bus y sockets. La
   concurrencia del modelo es cuota de API y ata mucho antes que la máquina.
+- Rotar cada 75 segundos en vez de cada 8 minutos multiplica por ocho las
+  costuras. Cada una se cose con 3 s de solape y deduplicación, y las cuatro
+  medidas no dejaron huecos ni duplicados — pero son cuatro, no cuarenta.
