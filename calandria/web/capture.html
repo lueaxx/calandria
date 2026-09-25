@@ -70,7 +70,7 @@ button.primary.stop { background: transparent; color: var(--cream); border: 1px 
 
 <main>
   <h1>Enviar audio de este escenario</h1>
-  <p class="sub">Elegí la entrada conectada a la consola y dejá esta pestaña abierta. No hace falta encoder ni servidor RTMP.</p>
+  <p class="sub">Elegí el micrófono de la consola, o el audio de otra pestaña para subtitular una transmisión que ya estés mirando. Dejá esta pestaña abierta. No hace falta encoder ni servidor RTMP.</p>
 
   <div class="state" id="state" data-s="idle" role="status" aria-live="polite">
     <span class="dot"></span>
@@ -84,10 +84,29 @@ button.primary.stop { background: transparent; color: var(--cream); border: 1px 
   </div>
 
   <div class="field">
+    <label for="kind">Fuente</label>
+    <select id="kind">
+      <option value="mic">Micrófono o consola</option>
+      <option value="tab">Otra pestaña del navegador</option>
+    </select>
+  </div>
+
+  <div class="field" id="deviceField">
     <label for="device">Entrada de audio</label>
     <select id="device"></select>
-    <div class="meter" id="meter"><i id="meterBar"></i></div>
   </div>
+
+  <div class="field" id="tabHint" hidden>
+    <p class="hint">
+      Al empezar, el navegador te pide qué compartir. Elegí la pestaña donde
+      suena la charla y <strong>marcá la casilla de compartir el audio</strong>:
+      sin eso llega imagen y nada de sonido. Sirve para cualquier reproductor
+      &mdash; Swapcard, YouTube, Zoom &mdash; porque toma lo que la pestaña suena,
+      no el stream.
+    </p>
+  </div>
+
+  <div class="meter" id="meter"><i id="meterBar"></i></div>
 
   <button class="primary" id="go">Empezar a enviar</button>
   <p class="err" id="err" hidden></p>
@@ -135,6 +154,19 @@ async function boot() {
     .filter((d) => d.kind === "audioinput");
   const dsel = $("device");
   devices.forEach((d, i) => dsel.append(new Option(d.label || `Entrada ${i + 1}`, d.deviceId)));
+
+  // Tab audio needs getDisplayMedia, which Safari does not implement for
+  // audio. Offering the option and failing at the click would be worse than
+  // not offering it.
+  const kind = $("kind");
+  if (!navigator.mediaDevices.getDisplayMedia) {
+    kind.querySelector('option[value="tab"]').disabled = true;
+  }
+  kind.onchange = () => {
+    const tab = kind.value === "tab";
+    $("deviceField").hidden = tab;
+    $("tabHint").hidden = !tab;
+  };
 }
 
 async function start() {
@@ -142,18 +174,38 @@ async function start() {
   const session = $("session").value;
   if (!session) return fail("Elegí una sala.");
 
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      deviceId: $("device").value ? { exact: $("device").value } : undefined,
-      channelCount: 1,
-      // A stage feed is already mixed and levelled. Browser voice processing
-      // is tuned for a person on a call and would gate applause, duck the
-      // room, and ride the gain under a quiet speaker.
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-    },
-  });
+  if ($("kind").value === "tab") {
+    // Chrome only offers tab audio alongside video, so ask for both and drop
+    // the picture -- we never read it, and stopping the track frees the
+    // capture indicator that would otherwise sit over the talk.
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: { channelCount: 1, echoCancellation: false,
+               noiseSuppression: false, autoGainControl: false },
+    });
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach((t) => t.stop());
+      return fail("Esa pestaña se compartió sin audio. Volvé a intentarlo y " +
+                  "marcá la casilla de compartir el audio de la pestaña.");
+    }
+    stream.getVideoTracks().forEach((t) => t.stop());
+    // The viewer can also end the share from the browser's own bar, which
+    // never passes through our stop button.
+    stream.getAudioTracks()[0].onended = () => { if (running) stop(); };
+  } else {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: $("device").value ? { exact: $("device").value } : undefined,
+        channelCount: 1,
+        // A stage feed is already mixed and levelled. Browser voice processing
+        // is tuned for a person on a call and would gate applause, duck the
+        // room, and ride the gain under a quiet speaker.
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+  }
 
   // Asking the AudioContext for 16 kHz directly lets the browser resample with
   // a proper filter, which is better than anything worth hand-writing here.
@@ -179,6 +231,13 @@ async function start() {
     if (!running) return;
     setState("error", e.reason || "Conexión cerrada");
     if (e.code === 4400) fail("Esa sala no está configurada con source.type = mic.");
+    // The server allows one audio source per stage and the newest wins, so a
+    // close here means another tab or machine took over. Saying so beats
+    // "connection closed", which sends an operator hunting for a network
+    // problem that is not there.
+    if (e.code === 4409) fail("Otra pestaña o equipo empezó a enviar audio a esta sala. " +
+                              "Sólo una fuente por sala: cerrá la otra y volvé a empezar.");
+    if (e.code === 4404) fail("Esa sala no existe en este servidor.");
     stop();
   };
 
