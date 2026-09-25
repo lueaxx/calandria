@@ -328,6 +328,20 @@ def _parse_offset(value) -> float | None:
         return None
 
 
+# Rotation is the only moment a stage needs two live sessions at once, and
+# concurrent sessions are capped per project. With every stage free to rotate
+# whenever its own clock says so, a server running N stages peaks at 2N -- and
+# the cap is not a queue: going over closes sessions with 1008 "The operation
+# was aborted", on whichever stages happen to be speaking rather than on the one
+# that asked for too much. Observed with two stages, both failing together.
+#
+# Serialising rotations holds the peak at N+1. A stage that wants to rotate
+# while another is mid-rotation waits, which costs it a few seconds of extra
+# session age -- cheap against the alternative, and bounded, because an overlap
+# lasts overlap_seconds and not longer.
+_ROTATION_GATE = asyncio.Lock()
+
+
 class GeminiLiveBackend:
     name = "gemini-live"
 
@@ -400,6 +414,7 @@ class GeminiLiveBackend:
         primary: _LiveSession | None = None
         secondary: _LiveSession | None = None
         rotation_started_at: float | None = None  # audio ts when overlap began
+        holding_gate = False
         session_started_ts = 0.0
         last_final_tail = ""
 
@@ -441,9 +456,19 @@ class GeminiLiveBackend:
 
                 age = chunk.ts_end - session_started_ts
                 if secondary is None and (age >= self._rotate_after or primary.go_away):
-                    log.info("[%s] rotating live session at %.1fs of audio", self._label, chunk.ts_end)
-                    secondary = self._new_session()
-                    rotation_started_at = chunk.ts_end
+                    # Non-blocking: if another stage is mid-rotation, carry on
+                    # with the current session and try again on the next chunk,
+                    # 100 ms later. Waiting on the lock here would stall this
+                    # stage's audio pump behind another stage's overlap.
+                    if _ROTATION_GATE.locked():
+                        pass
+                    else:
+                        await _ROTATION_GATE.acquire()
+                        holding_gate = True
+                        log.info("[%s] rotating live session at %.1fs of audio",
+                                 self._label, chunk.ts_end)
+                        secondary = self._new_session()
+                        rotation_started_at = chunk.ts_end
 
                 # Drain whatever the *primary* has produced. The secondary's
                 # output is deliberately discarded during the overlap: both are
@@ -471,6 +496,9 @@ class GeminiLiveBackend:
                     session_started_ts = chunk.ts_end
                     rotation_started_at = None
                     primary.pending_dedup = last_final_tail
+                    if holding_gate:
+                        _ROTATION_GATE.release()
+                        holding_gate = False
                     if self._on_rotate:
                         self._on_rotate()
 
@@ -494,6 +522,10 @@ class GeminiLiveBackend:
             if primary.error is not None:
                 raise SttError(str(primary.error)) from primary.error
         finally:
+            # A stage torn down mid-overlap must not leave every other stage
+            # unable to rotate for the rest of the event.
+            if holding_gate:
+                _ROTATION_GATE.release()
             if primary is not None:
                 await primary.aclose()
             if secondary is not None:
