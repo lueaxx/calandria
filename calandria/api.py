@@ -220,6 +220,14 @@ def create_app(cfg: Config) -> FastAPI:
         except Exception as exc:
             log.debug("status socket closed: %s", exc)
 
+    # One microphone per stage. Two sockets pushing into the same session
+    # interleave two copies of the room into one stream, and the model does not
+    # report that as an error -- it just degrades, which is far harder to
+    # diagnose than a refusal. Observed live: a second capture tab left open
+    # pushed transcription latency from ~1 s to 8 s and then stopped it
+    # entirely, with every counter still reading healthy.
+    active_ingest: dict[str, WebSocket] = {}
+
     @app.websocket("/ws/ingest")
     async def ws_ingest(ws: WebSocket, session: str = Query(...)):
         """Accept raw PCM from a browser or an on-stage agent.
@@ -236,6 +244,22 @@ def create_app(cfg: Config) -> FastAPI:
         if source is None:
             await ws.close(code=4400, reason="this session is not configured with source.type=mic")
             return
+
+        # The newest connection wins. The alternative -- refuse the newcomer --
+        # reads as safer but fails the case that actually happens at an event:
+        # the operator's laptop drops its WiFi and reconnects, and a half-dead
+        # socket the server has not timed out yet would keep the stage silent.
+        previous = active_ingest.get(session)
+        if previous is not None:
+            log.warning(
+                "[%s] a second audio source connected; dropping the first. "
+                "Two sockets feeding one stage mixes both into the transcript.",
+                session,
+            )
+            with contextlib.suppress(Exception):
+                await previous.close(code=4409, reason="replaced by a newer audio source")
+        active_ingest[session] = ws
+
         try:
             while True:
                 source.push(await ws.receive_bytes())
@@ -243,6 +267,12 @@ def create_app(cfg: Config) -> FastAPI:
             pass
         except Exception as exc:
             log.debug("ingest socket closed: %s", exc)
+        finally:
+            # Only clear the slot if it is still ours: a newer socket may have
+            # taken over already, and removing its entry would let a third
+            # connection in without displacing it.
+            if active_ingest.get(session) is ws:
+                active_ingest.pop(session, None)
 
     return app
 
