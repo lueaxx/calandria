@@ -74,7 +74,8 @@ Cut to the dashboard.
 
 > "Four stages here. English talks captioned in Spanish and Portuguese, Spanish
 > talks captioned in English. Adding a stage is five lines of YAML. Adding a
-> language is one word."
+> language is one word. We measured a hundred stages on one process, at under a
+> fifth of a single core."
 
 Hover a latency meter so the tooltip shows p50 and p95 against the one-second
 mark.
@@ -129,6 +130,7 @@ All measured, all reproducible from the repository.
 | Cost | **USD 0.65** per stage-hour with one extra language |
 | Ten stages, ten hours, three languages | **≈ USD 60** |
 | Word accuracy | **92.7%** English · **95.4%** Spanish |
+| Stages on one process | **100**, with 400 viewers, on 18.6% of one core |
 | Tests | 114 |
 
 The accuracy figures come from synthetic samples where the script is ground
