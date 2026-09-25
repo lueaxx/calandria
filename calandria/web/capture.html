@@ -80,7 +80,13 @@ button.primary.stop { background: transparent; color: var(--cream); border: 1px 
 
   <div class="field">
     <label for="session">Sala</label>
-    <select id="session"></select>
+    <select id="session" multiple size="4"></select>
+    <p class="hint">
+      Ctrl+clic para mandar el mismo audio a varias salas a la vez. Cada una
+      transcribe y traduce por su cuenta, que es como se demuestra la capacidad
+      en paralelo desde una sola fuente. Ojo con la cuota: el tier gratuito de
+      AI&nbsp;Studio aguanta pocas sesiones de transcripción simultáneas.
+    </p>
   </div>
 
   <div class="field">
@@ -121,7 +127,11 @@ button.primary.stop { background: transparent; color: var(--cream); border: 1px 
 <script>
 const $ = (id) => document.getElementById(id);
 const PCM_RATE = 16000;          // what the rest of the pipeline speaks
-let ctx = null, node = null, stream = null, ws = null, sentBytes = 0, running = false;
+let ctx = null, node = null, stream = null, sentBytes = 0, running = false;
+// One socket per stage. The audio is decoded once in this page and the same
+// PCM frame is written to each, which is the browser-side shape of the same
+// trade the server makes: capture once, fan out cheaply.
+let sockets = [];
 
 function setState(s, text) {
   $("state").dataset.s = s;
@@ -136,8 +146,13 @@ async function boot() {
   const cfg = await (await fetch("/api/config")).json();
   const sel = $("session");
   for (const s of cfg.sessions) sel.append(new Option(s.title, s.id));
-  const wanted = new URLSearchParams(location.search).get("session");
-  if (wanted) sel.value = wanted;
+  // ?session= accepts a comma-separated list, so a bookmark can open the page
+  // already aimed at the stages an operator runs. With none given, the first
+  // stage is selected rather than leaving the button inert on arrival.
+  const wanted = (new URLSearchParams(location.search).get("session") || "")
+    .split(",").map((v) => v.trim()).filter(Boolean);
+  for (const opt of sel.options) opt.selected = wanted.includes(opt.value);
+  if (!sel.selectedOptions.length && sel.options.length) sel.options[0].selected = true;
   if (!cfg.sessions.length) fail("No hay salas configuradas en este servidor.");
 
   // Device labels stay hidden until permission is granted, so ask first and
@@ -171,8 +186,8 @@ async function boot() {
 
 async function start() {
   sentBytes = 0;
-  const session = $("session").value;
-  if (!session) return fail("Elegí una sala.");
+  const chosen = [...$("session").selectedOptions].map((o) => o.value);
+  if (!chosen.length) return fail("Elegí al menos una sala.");
 
   if ($("kind").value === "tab") {
     // Chrome only offers tab audio alongside video, so ask for both and drop
@@ -222,24 +237,32 @@ async function start() {
   `], { type: "application/javascript" })));
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws/ingest?session=${encodeURIComponent(session)}`);
-  ws.binaryType = "arraybuffer";
-
-  ws.onopen = () => setState("live", "Enviando");
-  ws.onerror = () => { setState("error", "Error de conexión"); };
-  ws.onclose = (e) => {
-    if (!running) return;
-    setState("error", e.reason || "Conexión cerrada");
-    if (e.code === 4400) fail("Esa sala no está configurada con source.type = mic.");
-    // The server allows one audio source per stage and the newest wins, so a
-    // close here means another tab or machine took over. Saying so beats
-    // "connection closed", which sends an operator hunting for a network
-    // problem that is not there.
-    if (e.code === 4409) fail("Otra pestaña o equipo empezó a enviar audio a esta sala. " +
-                              "Sólo una fuente por sala: cerrá la otra y volvé a empezar.");
-    if (e.code === 4404) fail("Esa sala no existe en este servidor.");
-    stop();
-  };
+  sockets = chosen.map((id) => {
+    const sock = new WebSocket(
+      `${proto}://${location.host}/ws/ingest?session=${encodeURIComponent(id)}`);
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => setState("live", chosen.length > 1
+      ? `Enviando a ${chosen.length} salas` : "Enviando");
+    sock.onerror = () => setState("error", `Error de conexión (${id})`);
+    sock.onclose = (e) => {
+      if (!running) return;
+      // One stage failing must not take the others down: at an event the
+      // remaining rooms keep their captions while the operator deals with the
+      // one that broke. Only a total loss stops the capture.
+      if (e.code === 4400) fail(`La sala ${id} no está configurada con source.type = mic.`);
+      if (e.code === 4404) fail(`La sala ${id} no existe en este servidor.`);
+      // The server allows one audio source per stage and the newest wins, so a
+      // close here means another tab or machine took over. Saying so beats
+      // "connection closed", which sends an operator hunting for a network
+      // problem that is not there.
+      if (e.code === 4409) fail(`Otra pestaña o equipo empezó a enviar audio a ${id}. ` +
+                                "Sólo una fuente por sala: cerrá la otra y volvé a empezar.");
+      const alive = sockets.filter((w) => w.readyState <= 1).length;
+      if (!alive) { setState("error", e.reason || "Conexión cerrada"); stop(); }
+      else setState("live", `Enviando a ${alive} sala${alive > 1 ? "s" : ""}`);
+    };
+    return sock;
+  });
 
   node = new AudioWorkletNode(ctx, "tap");
   const source = ctx.createMediaStreamSource(stream);
@@ -275,8 +298,15 @@ async function start() {
         else buf[0] = head.subarray(take);
       }
       bufLen -= FRAME;
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(out.buffer);
+      // Every open stage gets the same frame. Counted once: the meter reports
+      // how much of the talk has been sent, not how many copies left the page.
+      let sent = false;
+      for (const sock of sockets) {
+        if (sock.readyState !== WebSocket.OPEN) continue;
+        sock.send(out.buffer);
+        sent = true;
+      }
+      if (sent) {
         sentBytes += out.buffer.byteLength;
         $("sent").textContent = (sentBytes / 2 / PCM_RATE).toFixed(0) + "s enviados";
       }
@@ -294,8 +324,10 @@ function stop() {
   if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
   if (ctx) { ctx.close(); ctx = null; }
-  if (ws && ws.readyState <= 1) { ws.onclose = null; ws.close(); }
-  ws = null;
+  for (const sock of sockets) {
+    if (sock.readyState <= 1) { sock.onclose = null; sock.close(); }
+  }
+  sockets = [];
   $("go").textContent = "Empezar a enviar";
   $("go").classList.remove("stop");
   $("meterBar").style.width = "0";

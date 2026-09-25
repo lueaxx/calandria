@@ -156,15 +156,88 @@ function openSocket(lang, paired) {
                                : onMessage(JSON.parse(e.data));
 }
 
-let pairWs = null;
+let pairSockets = [];
+// The pair a bilingual audience wants: Spanish under an English talk, English
+// under a Spanish one. Ordered, so the first available wins on a stage that
+// carries only one of them.
+const AUTO_PAIR = ["en", "es"];
+
+function closePairSockets() {
+  for (const w of pairSockets) { w.onclose = null; w.close(); }
+  pairSockets = [];
+  autoCandidates.clear();
+}
+
 function openPairSocket() {
-  const target = $("lang").value === "both"
-    ? config.sessions.find((s) => s.id === current.session).languages.find((l) => l !== sourceLang)
-    : null;
-  if (!target) return;
-  if (pairWs) { pairWs.onclose = null; pairWs.close(); }
-  pairWs = new WebSocket(socketURL(target));
-  pairWs.onmessage = (e) => onPairMessage(JSON.parse(e.data), "target");
+  closePairSockets();
+  if ($("lang").value !== "both") return;
+  const stage = config.sessions.find((s) => s.id === current.session);
+
+  if (sourceLang !== "auto") {
+    const target = stage.languages.find((l) => l !== sourceLang);
+    if (!target) return;
+    const w = new WebSocket(socketURL(target));
+    w.onmessage = (e) => onPairMessage(JSON.parse(e.data), "target");
+    pairSockets = [w];
+    return;
+  }
+
+  // A stage that does not declare its language cannot have its pair chosen in
+  // advance -- and it may change mid-session anyway. Subscribe to both and let
+  // each line decide; see chooseAutoTarget.
+  for (const lang of AUTO_PAIR) {
+    if (!stage.languages.includes(lang)) continue;
+    const w = new WebSocket(socketURL(lang));
+    w.onmessage = (e) => onAutoTarget(JSON.parse(e.data), lang);
+    pairSockets.push(w);
+  }
+}
+
+const autoCandidates = new Map();   // seq -> { lang: text }
+
+/* Compare two lines for "is this the same language, or a translation of it".
+   Accents and punctuation are stripped because the translator is free to
+   normalise them when it repeats a line unchanged, and a difference there is
+   not a difference in language. */
+function flatten(t) {
+  return (t || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function onAutoTarget(c, lang) {
+  if (!c.text || !c.is_final) return;
+  const byLang = autoCandidates.get(c.seq) || {};
+  byLang[lang] = c.text;
+  autoCandidates.set(c.seq, byLang);
+  chooseAutoTarget(c.seq);
+}
+
+/* Pick the candidate that is actually a translation.
+
+   The translator is told to repeat a line already in the target language
+   unchanged, so on a Spanish sentence the Spanish channel comes back matching
+   the original and the English channel does not. Showing the one that differs
+   gives Spanish under an English talk and English under a Spanish one, with no
+   language detection and nothing to configure -- and it keeps working when the
+   language changes mid-session, which is the case that made 'auto' worth
+   having. */
+function chooseAutoTarget(seq) {
+  const entry = pairs.get(seq);
+  const byLang = autoCandidates.get(seq);
+  if (!entry || !entry.sourceText || !byLang) return;
+  const original = flatten(entry.sourceText);
+  for (const lang of AUTO_PAIR) {
+    const candidate = byLang[lang];
+    if (candidate && flatten(candidate) !== original) {
+      entry.block.querySelector(".target").textContent = candidate;
+      autoCandidates.delete(seq);
+      return;
+    }
+  }
+  // Every candidate matches the original: either the other channel has not
+  // arrived yet, or the talk is in a language this pair does not cover. Leave
+  // the row blank rather than echoing the original back at the reader.
 }
 
 function setState(s) { $("dot").dataset.state = s; }
@@ -254,6 +327,10 @@ function onPairMessage(c, side) {
     pairs.set(c.seq, entry);
   }
   entry.block.querySelector(side === "source" ? ".source" : ".target").textContent = c.text;
+  if (side === "source" && c.is_final) {
+    entry.sourceText = c.text;
+    chooseAutoTarget(c.seq);   // a candidate may have arrived first
+  }
   // Mark the original as provisional while it is still being revised, so a
   // reader can tell a sentence that is still forming from one that has settled.
   if (side === "source") entry.block.classList.toggle("pending", !c.is_final);

@@ -1,0 +1,56 @@
+# Cuatro tracks, cada uno siguiendo su propia URL.
+#
+# Es la forma de un evento real: el servidor va a buscar el audio de cada sala
+# por su cuenta, sin que nadie tenga que dejar una pestana abierta. ffmpeg
+# acepta RTMP, HLS (.m3u8), SRT, MPEG-TS y HTTP directo.
+#
+# Para una URL de pagina (YouTube, Twitch) hay que resolver primero el manifest:
+#
+#   yt-dlp -g --format bestaudio "https://www.youtube.com/watch?v=XXXX"
+#
+# y pegar lo que devuelve. Para una transmision detras de login que no expone
+# manifest -- Swapcard, un webinar privado -- no hay URL que poner: se usa
+# /capture con "Otra pestana del navegador", una pestana de captura por sala.
+#
+# Los cuatro no declaran idioma: el modelo lo detecta por enunciado, asi que la
+# misma config sirve para un evento en cualquier idioma sin editarla.
+
+stt:
+  provider: aistudio
+  backend: gemini
+  mode: SMART
+  rotate_after_seconds: 75
+  overlap_seconds: 3
+
+translation:
+  provider: vertex
+  model: gemini-3.5-flash-lite
+
+glossary: ./glossary.yaml
+
+sessions:
+  - id: track-1
+    title: "Track 1"
+    source: { type: stream, url: "https://ejemplo.local/track1/audio.m3u8" }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  - id: track-2
+    title: "Track 2"
+    source: { type: stream, url: "https://ejemplo.local/track2/audio.m3u8" }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  - id: track-3
+    title: "Track 3"
+    source: { type: stream, url: "rtmp://encoder.local/live/track3" }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  # Sin URL: esta la alimenta una pestana compartida desde /capture, para una
+  # transmision que solo se puede mirar.
+  - id: track-4
+    title: "Track 4 (pestana compartida)"
+    source: { type: mic }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
