@@ -157,6 +157,10 @@ function openSocket(lang, paired) {
 }
 
 let pairSockets = [];
+// Declared before the functions that clear it: closePairSockets runs during
+// boot, and a `const` below its first use is a ReferenceError rather than an
+// undefined, which takes the whole paired view down silently.
+const autoCandidates = new Map();   // seq -> { lang: text }
 // The pair a bilingual audience wants: Spanish under an English talk, English
 // under a Spanish one. Ordered, so the first available wins on a stage that
 // carries only one of them.
@@ -193,7 +197,6 @@ function openPairSocket() {
   }
 }
 
-const autoCandidates = new Map();   // seq -> { lang: text }
 
 /* Compare two lines for "is this the same language, or a translation of it".
    Accents and punctuation are stripped because the translator is free to
