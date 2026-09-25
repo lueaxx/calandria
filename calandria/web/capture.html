@@ -203,7 +203,13 @@ async function start() {
       return fail("Esa pestaña se compartió sin audio. Volvé a intentarlo y " +
                   "marcá la casilla de compartir el audio de la pestaña.");
     }
-    stream.getVideoTracks().forEach((t) => t.stop());
+    // The video track is left running although nothing reads it. Stopping it
+    // to be tidy -- and to drop the capture indicator -- can end the whole
+    // share in Chrome, which fires onended on the audio track, which calls
+    // stop() below, and the capture kills itself seconds after starting. The
+    // indicator staying on screen is a far cheaper price. Disabled rather than
+    // stopped, so no frames are decoded for a picture nobody looks at.
+    stream.getVideoTracks().forEach((t) => { t.enabled = false; });
     // The viewer can also end the share from the browser's own bar, which
     // never passes through our stop button.
     stream.getAudioTracks()[0].onended = () => { if (running) stop(); };
