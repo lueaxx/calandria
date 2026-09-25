@@ -1,0 +1,26 @@
+# Demo 2 - a real Nerdearla talk, captioned and translated live.
+#
+# Fetch the audio first; it is not in the repository because a conference
+# recording's licence does not allow redistributing it:
+#
+#   ./scripts/fetch-talk.sh "https://www.youtube.com/watch?v=GkVjMxYi5gA" \
+#       samples/talk-real-en.wav 420 360
+
+stt:
+  provider: aistudio        # the streaming model is published here, not on Vertex
+  backend: gemini
+  mode: SMART
+translation:
+  enabled: true
+  # Set to 'vertex' to spend Google Cloud credits and escape the free tier's
+  # 15-requests-per-minute cap. Needs GOOGLE_APPLICATION_CREDENTIALS.
+  provider: aistudio
+  model: gemini-3.5-flash-lite
+glossary: ./glossary.yaml
+
+sessions:
+  - id: thor
+    title: "Nerdearla - Building Multilingual Conversational AI Agents"
+    source: { type: file, path: ./samples/talk-real-en.wav, loop: true }
+    source_language: en
+    targets: [es]

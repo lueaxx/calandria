@@ -1,26 +1,69 @@
-# Two ways to run this:
+# Running this:
 #
-#   docker compose up                 one process, in-memory bus. Enough for
-#                                     most conferences -- a single container
-#                                     carries well over a dozen stages.
+#   docker compose up                              one process, in-memory bus.
+#                                                  Enough for most conferences.
 #
-#   docker compose --profile scale up scale-out: Redis carries captions between
-#                                     replicas, so any replica can serve any
-#                                     viewer. See SCALING.md.
+#   docker compose --profile demo up demo-offline  see it work with no
+#                                                  credentials at all
+#   docker compose --profile demo up demo-real     a real conference talk
+#   docker compose --profile demo up demo-scale    four stages at once
+#
+#   docker compose --profile scale up              Redis carries captions
+#                                                  between replicas. SCALING.md.
+#
+# The demos are in demo/README.md.
+
+x-common: &common
+  build: .
+  environment: &env
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    # Translation can run on Vertex to spend Google Cloud credits and escape
+    # the free tier's request cap; transcription cannot, because the streaming
+    # model is only published on AI Studio.
+    GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+    GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
+  volumes: &vols
+    - ./glossary.yaml:/app/glossary.yaml:ro
+    - ./samples:/app/samples:ro
+    - ./demo:/app/demo:ro
+    - ./transcripts:/app/transcripts
+  restart: unless-stopped
 
 services:
   calandria:
-    build: .
+    <<: *common
     ports: ["8080:8080"]
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      <<: *env
       CALANDRIA_STT_BACKEND: ${CALANDRIA_STT_BACKEND:-gemini}
     volumes:
       - ./calandria.yaml:/app/calandria.yaml:ro
       - ./glossary.yaml:/app/glossary.yaml:ro
       - ./samples:/app/samples:ro
       - ./transcripts:/app/transcripts
-    restart: unless-stopped
+
+  # ---------------------------------------------------------------- demos
+
+  demo-offline:
+    <<: *common
+    profiles: ["demo"]
+    ports: ["8080:8080"]
+    command: ["-c", "demo/offline.yaml"]
+
+  demo-real:
+    <<: *common
+    profiles: ["demo"]
+    ports: ["8080:8080"]
+    command: ["-c", "demo/real-talk.yaml"]
+
+  demo-scale:
+    <<: *common
+    profiles: ["demo"]
+    ports: ["8080:8080"]
+    command: ["-c", "demo/scale.yaml"]
+
+  # ------------------------------------------------------------- scale-out
 
   redis:
     image: redis:7-alpine
@@ -29,16 +72,15 @@ services:
     restart: unless-stopped
 
   calandria-scaled:
-    build: .
+    <<: *common
     profiles: ["scale"]
     depends_on: [redis]
     ports: ["8081:8080"]
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      <<: *env
       CALANDRIA_BUS: redis://redis:6379
     volumes:
       - ./calandria.yaml:/app/calandria.yaml:ro
       - ./glossary.yaml:/app/glossary.yaml:ro
       - ./samples:/app/samples:ro
       - ./transcripts:/app/transcripts
-    restart: unless-stopped

@@ -1,0 +1,28 @@
+# Demo 1 - no credentials of any kind.
+#
+# Transcription is replayed from the scripts beside the sample audio instead of
+# being produced by a model. Everything else is the real system: fan-out,
+# translation workers, WebSockets, exports, cost tracking (reporting zero,
+# correctly). The point is to be able to look at it before signing up for
+# anything.
+
+stt:
+  backend: fake
+translation:
+  enabled: false          # nothing to translate: the fake backend is scripted
+features:
+  cost_tracking: true     # shows $0.00, which is the honest number here
+glossary: ./glossary.yaml
+
+sessions:
+  - id: keynote
+    title: "Main stage - Opening keynote"
+    source: { type: file, path: ./samples/keynote-en.wav, loop: true }
+    source_language: en
+    targets: [es]
+
+  - id: sala-2
+    title: "Sala 2 - Accesibilidad"
+    source: { type: file, path: ./samples/charla-es.wav, loop: true }
+    source_language: es
+    targets: [en]

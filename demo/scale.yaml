@@ -1,0 +1,38 @@
+# Demo 3 - several stages at once, which is the whole argument.
+#
+# Four stages and five language pairs in one process. Four is what fits on a
+# dashboard, not a limit: pushing audio into a live session costs under one
+# percent of a core, so one process carries into the low hundreds. The
+# dashboard's projection box extrapolates from the rate being measured live.
+
+stt:
+  provider: aistudio
+translation:
+  enabled: true
+  provider: aistudio        # 'vertex' avoids the free tier's 15/min cap
+glossary: ./glossary.yaml
+
+sessions:
+  - id: keynote
+    title: "Main stage - Opening keynote"
+    source: { type: file, path: ./samples/keynote-en.wav, loop: true }
+    source_language: en
+    targets: [es, pt]
+
+  - id: sala-2
+    title: "Sala 2 - Accesibilidad"
+    source: { type: file, path: ./samples/charla-es.wav, loop: true }
+    source_language: es
+    targets: [en]
+
+  - id: sala-3
+    title: "Sala 3 - Observability"
+    source: { type: file, path: ./samples/keynote-en.wav, loop: true }
+    source_language: en
+    targets: [es]
+
+  - id: sala-4
+    title: "Sala 4 - Plataforma"
+    source: { type: file, path: ./samples/charla-es.wav, loop: true }
+    source_language: es
+    targets: [en, pt]
