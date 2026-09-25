@@ -10,3 +10,7 @@ transcripts/
 # samples/*.wav
 !samples/README.md
 transcripts/
+
+# service account keys - NUNCA commitear
+*.sa.json
+gcp-key.json

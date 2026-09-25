@@ -50,8 +50,17 @@ AUDIO_QUEUE_MAX = 150  # ~15 s at 100 ms chunks
 LIVE_FAILURES_BEFORE_FALLBACK = 2
 
 
-def make_client(cfg: Config) -> genai.Client:
-    if cfg.provider == "vertex":
+def make_client(cfg: Config, provider: str | None = None) -> genai.Client:
+    """Build a client for one provider.
+
+    Transcription and translation can come from different providers, because
+    they are not always available from the same one: the streaming
+    transcription model is published on AI Studio and not on Vertex, while
+    Google Cloud credits apply on Vertex and not on AI Studio. Taking the
+    provider as an argument lets each role use whichever one can serve it.
+    """
+    provider = provider or cfg.provider
+    if provider == "vertex":
         project = os.environ.get("GOOGLE_CLOUD_PROJECT")
         if not project:
             raise RuntimeError(
@@ -63,7 +72,9 @@ def make_client(cfg: Config) -> genai.Client:
         return genai.Client(
             vertexai=True,
             project=project,
-            location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            # 'global' is where the newer models are published; a region that
+            # does not carry one answers 404 rather than falling back.
+            location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
         )
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not key:
@@ -82,12 +93,14 @@ class SessionWorker:
         bus: Bus,
         glossary: Glossary,
         client: genai.Client | None,
+        translate_client: genai.Client | None = None,
     ) -> None:
         self.cfg = session_cfg
         self.app = app_cfg
         self.bus = bus
         self.glossary = glossary
         self.client = client
+        self.translate_client = translate_client or client
 
         self.status = SessionStatus(
             session_id=session_cfg.id,
@@ -148,12 +161,12 @@ class SessionWorker:
     # ------------------------------------------------------------------ plumbing
 
     def _build_fanout(self) -> TranslationFanout | None:
-        if not (self.app.translation.enabled and self.cfg.targets and self.client):
+        if not (self.app.translation.enabled and self.cfg.targets and self.translate_client):
             return None
         rules = self.glossary.translation_rules()
         translators = {
             lang: GeminiTranslator(
-                self.client,
+                self.translate_client,
                 model=self.app.translation.model,
                 source_language=self.cfg.source_language,
                 target_language=lang,
@@ -369,10 +382,22 @@ class Orchestrator:
         self.glossary = Glossary.load(cfg.glossary)
         for warning in self.glossary.warnings():
             log.warning("glossary: %s", warning)
-        self.client = None if cfg.stt.backend == "fake" else make_client(cfg)
+        self.client = (None if cfg.stt.backend == "fake"
+                       else make_client(cfg, cfg.stt.provider))
+        self.translate_client = (
+            make_client(cfg, cfg.translation.provider)
+            if cfg.translation.enabled
+            and cfg.translation.provider
+            and cfg.translation.provider != (cfg.stt.provider or cfg.provider)
+            else self.client
+        )
+        if self.translate_client is not self.client:
+            log.info("translation uses the %s provider; transcription uses %s",
+                     cfg.translation.provider, cfg.stt.provider or cfg.provider)
         self.workers: dict[str, SessionWorker] = {}
         for s in cfg.sessions:
-            self.workers[s.id] = SessionWorker(s, cfg, bus, self.glossary, self.client)
+            self.workers[s.id] = SessionWorker(s, cfg, bus, self.glossary,
+                                               self.client, self.translate_client)
 
     async def start_all(self) -> None:
         for worker in self.workers.values():
@@ -387,7 +412,8 @@ class Orchestrator:
     def add(self, session_cfg: SessionConfig) -> SessionWorker:
         if session_cfg.id in self.workers:
             raise ValueError(f"session {session_cfg.id!r} already exists")
-        worker = SessionWorker(session_cfg, self.cfg, self.bus, self.glossary, self.client)
+        worker = SessionWorker(session_cfg, self.cfg, self.bus, self.glossary,
+                               self.client, self.translate_client)
         self.workers[session_cfg.id] = worker
         return worker
 

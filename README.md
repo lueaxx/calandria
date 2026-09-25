@@ -30,15 +30,23 @@ docker compose up          →  http://localhost:8080
 - **Tells the production team what is happening** — per-stage latency, errors,
   and a running dollar figure.
 
-Measured on the sample audio in this repository, which you can reproduce:
+Measured on a **real Nerdearla talk** — six minutes of conference audio with a
+live audience, laughter, an accented speaker and the usual disfluencies:
 
 | | |
 |---|---|
-| Transcription latency, speech to caption | **p50 ~600 ms · p95 ~790 ms** |
-| Translation latency, speech to translated caption | ~1.5–2.5 s |
-| Word accuracy, English talk | **92.7%** |
-| Word accuracy, Spanish talk | **95.4%** |
-| Cost, one stage with two extra languages | **USD 0.60 per hour** |
+| Transcription latency, speech to caption | **p50 693 ms** |
+| Cost | **USD 0.65 per stage-hour**, one extra language |
+| Captions repeating the previous one | 6% |
+| Audio dropped · errors | 0 · 0 |
+
+And on the synthetic samples in this repository, where the script is ground
+truth so accuracy is measurable rather than impressionistic:
+
+| | |
+|---|---|
+| Word accuracy, English | **92.7%** |
+| Word accuracy, Spanish | **95.4%** |
 | Projected cost, 10 stages × 10 hours × 3 languages | **USD ~60** |
 
 ```bash
@@ -301,7 +309,21 @@ you would rather it stop.
 | | |
 |---|---|
 | **AI Studio** (default) | `GEMINI_API_KEY`. Simplest. |
-| **Vertex AI** | `provider: vertex` plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. Use this to spend Google Cloud credits. |
+| **Vertex AI** | `provider: vertex` plus `GOOGLE_CLOUD_PROJECT` and a service account. Use this to spend Google Cloud credits. |
+
+**The two roles can use different providers**, and usually should:
+
+```yaml
+stt:         { provider: aistudio }   # where the streaming model lives
+translation: { provider: vertex }     # where the quota and the credits are
+```
+
+This is not a hypothetical. The streaming transcription model
+`gemini-3.5-transcribe-live` is published on AI Studio and **not** on Vertex, in
+any region. Meanwhile AI Studio's free tier allows 15 translation requests per
+minute — which one stage in two languages exceeds — while Vertex has no such
+cap and is where Google Cloud credits apply. Splitting the roles is what makes
+both halves work at once.
 
 Models used, all configurable:
 

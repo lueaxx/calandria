@@ -387,3 +387,65 @@ def test_a_real_sentence_break_before_a_number_still_splits():
     assert split_sentences("That was the plan. 40 services later we knew better.") == [
         "That was the plan.", "40 services later we knew better.",
     ]
+
+
+def test_the_same_caption_twice_in_a_row_is_shown_once():
+    """Observed on a real talk: six words repeated five times consecutively.
+
+    Too short for the general restatement threshold, which exists so a speaker
+    repeating a phrase for emphasis minutes later is still captioned. Back to
+    back is a different thing entirely.
+    """
+    c = SentenceCommitter()
+    c.offer("I think I mentioned it already. And")
+    repeats = [c.offer("I think I mentioned it already. And")[0] for _ in range(4)]
+    assert all(r == "" for r in repeats), f"leaked: {[r for r in repeats if r][:1]}"
+
+
+def test_the_previous_caption_with_words_appended_keeps_only_the_new_words():
+    c = SentenceCommitter()
+    first, _ = c.offer("Um, yeah, maybe briefly about myself. And")
+    assert "briefly about myself" in first
+    grown = c.finish("Um, yeah, maybe briefly about myself, I think I mentioned it already.")
+    assert "mentioned it already" in grown
+    assert "briefly about myself" not in grown
+
+
+def test_a_phrase_repeated_later_in_the_talk_is_still_captioned():
+    # Emphasis is content. Only back-to-back repetition is an artefact.
+    c = SentenceCommitter()
+    c.offer("This matters a lot. Now")
+    c.finish("This matters a lot.")
+    for filler in ("We moved on to other things entirely.",
+                   "Then we discussed the database migration in detail."):
+        c.offer(filler + " Next")
+        c.finish(filler)
+    again = c.finish("This matters a lot.")
+    assert "matters a lot" in again
+
+
+def test_a_final_that_rewords_what_was_shown_only_adds_the_new_part():
+    """Observed on a real talk.
+
+    The model's final tidied up three captions that had already been shown --
+    expanding a contraction along the way -- and an exact comparison republished
+    all of them.
+    """
+    c = SentenceCommitter()
+    c.offer("So that is kind of where we're at now. Maybe")
+    c.offer("So that is kind of where we're at now. Maybe briefly about myself. I")
+    out = c.finish(
+        "So that is kind of where we are now. Maybe briefly about myself. "
+        "I think I mentioned it already. Here is something new entirely."
+    )
+    assert "something new entirely" in out
+    assert "where we are now" not in out
+    assert "briefly about myself" not in out
+
+
+def test_alignment_does_not_swallow_a_genuinely_different_final():
+    c = SentenceCommitter()
+    c.offer("We deployed on Friday without any incident at all. Then")
+    c.finish("We deployed on Friday without any incident at all.")
+    out = c.finish("The database migration afterwards took four entire hours to finish.")
+    assert "database migration" in out

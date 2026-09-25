@@ -53,6 +53,11 @@ class SessionConfig(BaseModel):
 
 class SttConfig(BaseModel):
     backend: Literal["gemini", "fake"] = "gemini"
+    # Overrides the top-level provider for transcription alone. The streaming
+    # transcription model is published on AI Studio and not on Vertex, while
+    # quota and credits often sit on the other one, so the two roles regularly
+    # want different providers.
+    provider: Literal["aistudio", "vertex"] | None = None
     model: str = "gemini-3.5-transcribe-live"
     mode: Literal["SMART", "VERBATIM"] = "SMART"
     word_timestamp: bool = False
@@ -98,6 +103,7 @@ class SttConfig(BaseModel):
 
 class TranslationConfig(BaseModel):
     enabled: bool = True
+    provider: Literal["aistudio", "vertex"] | None = None  # see SttConfig.provider
     model: str = "gemini-3.5-flash-lite"
     context_segments: int = 3
     temperature: float = 0.1
@@ -166,6 +172,10 @@ class Config(BaseModel):
         # rewriting the file that is baked into the image.
         if v := os.environ.get("CALANDRIA_PROVIDER"):
             cfg.provider = v  # type: ignore[assignment]
+        if v := os.environ.get("CALANDRIA_STT_PROVIDER"):
+            cfg.stt.provider = v  # type: ignore[assignment]
+        if v := os.environ.get("CALANDRIA_TRANSLATION_PROVIDER"):
+            cfg.translation.provider = v  # type: ignore[assignment]
         if v := os.environ.get("CALANDRIA_BUS"):
             cfg.bus = v
         if v := os.environ.get("CALANDRIA_PORT"):

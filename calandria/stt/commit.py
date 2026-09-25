@@ -43,6 +43,12 @@ _MAX_UTTERANCE_WORDS = 8000
 # Below this a repeated run is a speaker making a point, not the model
 # retelling a segment.
 _MIN_RESTATEMENT_WORDS = 8
+# A line repeating the one immediately before it is held to a much lower bar:
+# nobody says the same sentence twice in a row.
+_MIN_CONSECUTIVE_WORDS = 3
+# Words of new text that may sit inside an otherwise-aligned run before it is
+# treated as the speaker having moved on.
+_ALIGNMENT_GAP = 4
 # How much recently shown text is kept for spotting a retelling. Long enough to
 # cover the segment a closing final repeats, short enough that a speaker
 # returning to a theme minutes later is still captioned.
@@ -111,6 +117,10 @@ class SentenceCommitter:
         # between, and those interims clear `_released` just before the next
         # repeat needs it.
         self._history: list[str] = []
+        # The caption emitted immediately before this one. A line that repeats
+        # what was *just* said is judged far more strictly than one echoing
+        # something from minutes ago, because the two mean different things.
+        self._last: list[str] = []
 
     def reset(self) -> None:
         self._released = []
@@ -119,6 +129,7 @@ class SentenceCommitter:
         """Forget what was shown, for when the audio genuinely starts over."""
         self._released = []
         self._history = []
+        self._last = []
 
     @property
     def released_words(self) -> int:
@@ -138,6 +149,7 @@ class SentenceCommitter:
         return 0
 
     def _remember(self, words: list[str]) -> None:
+        self._last = words
         self._history = (self._history + words)[-_HISTORY_WORDS:]
         self._released.extend(words)
         if len(self._released) > _MAX_UTTERANCE_WORDS:
@@ -189,6 +201,32 @@ class SentenceCommitter:
         self._remember(normalise(new))
         return new, tail
 
+    def _aligned_prefix_len(self, flat: list[str]) -> int:
+        """How far into `flat` the already-released words reach, allowing edits.
+
+        The running hypothesis repeats itself verbatim, so an exact prefix
+        comparison is right for it. A final is a different kind of text: the
+        model rewrites it to be tidier, expanding contractions and repunctuating
+        ("where we're at now" becomes "where we are now"). One expanded
+        contraction defeats an exact comparison and the whole line is published
+        a second time.
+
+        Alignment tolerates that. Small insertions are stepped over; anything
+        larger ends the run, because past that point this is new speech.
+        """
+        if not self._released:
+            return 0
+        matcher = SequenceMatcher(None, self._released, flat, autojunk=False)
+        covered = 0
+        for block in matcher.get_matching_blocks():
+            if block.size == 0:
+                continue
+            if block.b <= covered + _ALIGNMENT_GAP:
+                covered = max(covered, block.b + block.size)
+            else:
+                break
+        return covered if covered >= _MIN_RESTATEMENT_WORDS else 0
+
     def _trim_reworded(self, text: str) -> str:
         """Trim a final that restates shown text without repeating it verbatim.
 
@@ -235,17 +273,48 @@ class SentenceCommitter:
                     break
         return best
 
+    def _repeats_the_previous_caption(self, words: list[str]) -> bool:
+        """Is this the line that was just shown, said again?
+
+        Distance is what separates an artefact from real speech. A speaker may
+        well repeat a short phrase for emphasis a minute later, but nobody says
+        the same sentence twice in a row, so a line matching the one
+        immediately before it is judged on a much lower bar. On a real talk
+        this was catching "I think I mentioned it already" five times in a row,
+        six words long -- under the threshold that governs older history.
+        """
+        if len(words) < _MIN_CONSECUTIVE_WORDS or not self._last:
+            return False
+        if words == self._last:
+            return True
+        # Or the previous caption, plus a few words the model then appended.
+        return (len(words) > len(self._last)
+                and words[:len(self._last)] == self._last)
+
     def _drop_already_shown(self, text: str) -> str:
-        """Remove the leading part of `text` that has already been read."""
+        """Remove whatever part of `text` the audience has already read.
+
+        Two bars, because distance changes what a repeat means. A line echoing
+        the caption immediately before it is almost certainly an artefact and is
+        cut at three words. A line echoing something from earlier in the talk
+        may well be a speaker returning to a point, so it has to be much longer
+        before it is touched -- otherwise "Exactly." is captioned once and
+        silently dropped every time after.
+        """
         words = normalise(text)
         if not words or not self._history:
             return text
+
+        if self._repeats_the_previous_caption(words):
+            if words == self._last:
+                return ""
+            return drop_leading_words(text, len(self._last))
+
         seen = self._shown_prefix_len(words)
-        if seen >= len(words):
-            return ""
         if seen >= _MIN_RESTATEMENT_WORDS:
-            return drop_leading_words(text, seen)
-        # No usable prefix: the retelling may have been reworded rather than
+            return "" if seen >= len(words) else drop_leading_words(text, seen)
+
+        # No usable prefix: a retelling may have been reworded rather than
         # replayed, which only a similarity comparison can recognise.
         return "" if self._already_shown(words) else text
 
@@ -315,7 +384,16 @@ class SentenceCommitter:
             # and cutting on sentence boundaries would show that clause twice.
             new = drop_leading_words(final_text, covered)
         else:
-            new = self._drop_already_shown(self._trim_reworded(final_text))
+            # Alignment is for a final that retells what was shown and then
+            # adds to it. When it appears to cover the whole line there is
+            # nothing new, which is also what two sentences differing by a
+            # single word look like ("option A" / "option B") -- so that case
+            # goes to the stricter checks rather than being silenced here.
+            aligned = self._aligned_prefix_len(flat)
+            if aligned and aligned < len(flat) - _MIN_CONSECUTIVE_WORDS:
+                new = drop_leading_words(final_text, aligned)
+            else:
+                new = self._drop_already_shown(self._trim_reworded(final_text))
 
         if not new.strip():
             return ""
