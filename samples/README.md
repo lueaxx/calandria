@@ -3,7 +3,10 @@
 `keynote-en.wav` is a short English clip with technical vocabulary, and
 `keynote-en.txt` is the script the `fake` backend replays against it.
 
-These are deliberately **not** recordings of real conference talks. A talk's
+`talk-*.wav` is whatever you fetched with `scripts/fetch-talk.sh` and is
+deliberately not tracked, for the reason below.
+
+The tracked samples are deliberately **not** recordings of real conference talks. A talk's
 recording is almost never licensed in a way that allows redistributing it inside
 an Apache-2.0 repository, and a sample file that quietly creates a licensing
 problem for everyone who forks the project is not a good sample file.
