@@ -428,11 +428,16 @@ class GeminiLiveBackend:
                 primary.feed(chunk)
                 if secondary is not None:
                     secondary.feed(chunk)
-                # Audio arrives every 100 ms whether or not the model is
-                # talking, which makes it the one clock in here that never
-                # stops. A sentence that has gone still is released on this
-                # beat rather than waiting for the model's next word.
-                primary.tick()
+                # DISABLED. The intent was right -- the release rules are
+                # written in time and only the audio clock never stops -- but
+                # beating the committer ten times a second re-released the same
+                # final on every beat, and each duplicate cost five translation
+                # calls. Measured live: the source line repeated ten times a
+                # second and the translation queue fell 14 s behind and kept
+                # growing. The committer's own tick() and its tests stay; what
+                # is missing is idempotence under repeated offers of identical
+                # text, which is a fix to make with a clear head.
+                # primary.tick()
 
                 age = chunk.ts_end - session_started_ts
                 if secondary is None and (age >= self._rotate_after or primary.go_away):
