@@ -437,6 +437,19 @@ already connected to the sound desk: pick the input, press start, leave the tab
 open. A level meter included, because a muted input and a broken pipeline look
 identical from anywhere else.
 
+It also captures **another browser tab**, which is how you caption a broadcast
+you can only watch rather than pull: a platform behind a login, a webinar, a
+player whose stream URL is not yours to have. Share the tab with its audio and
+what it plays is what gets captioned — the stream itself is never touched, so a
+session cookie, a proprietary embed or DRM make no difference. Measured on a
+live conference platform: 1.1–2.0 s to a translated caption.
+
+Only one audio source feeds a stage at a time, and the newest connection wins.
+Two tabs pushing into the same stage would mix two copies of the room into one
+transcript, which no counter reports — it just quietly gets worse. Newest-wins
+rather than refusing the newcomer, because the case that happens at an event is
+an operator's laptop dropping its WiFi and coming back.
+
 **Audience** — `/`. Picks a stage and a language, remembers both. Text size and
 light/dark are adjustable and persist. Scroll back to re-read what you missed;
 "Original + translation" shows both stacked.
@@ -501,7 +514,8 @@ telling you during a talk, and what to collect afterwards.
 
 The short version: open `/capture` on the laptop already plugged into the sound
 desk and press start. No encoder, no RTMP server, nothing to install, and no
-CDN between the microphone and the model.
+CDN between the microphone and the model. For a stage you can only watch in a
+browser, share that tab instead — same page, same button.
 
 ## Scaling
 

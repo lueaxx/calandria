@@ -22,7 +22,16 @@ transcript_dir: ./transcripts
 
 sessions:
   - id: micro
-    title: "Micrófono en vivo"
+    title: "Micrófono en vivo (español)"
     source: { type: mic }
     source_language: es
     targets: [en, pt, fr, de, it]
+
+  # Same source type: the capture page pushes a shared browser tab into this
+  # one over the same /ws/ingest. Separate from 'micro' only because the
+  # language the room speaks is a property of the stage, not of the cable.
+  - id: stream
+    title: "Transmisión en vivo (inglés)"
+    source: { type: mic }
+    source_language: en
+    targets: [es, pt, fr, de, it]
