@@ -48,14 +48,15 @@ de enviar, y para responder si un jurado pregunta.
 | Video demo de 1–2 minutos con audio real de una charla | `video/calandria-demo.mp4` (90 s) + `video/GUION.md` |
 | Repositorio público con licencia open source | <https://github.com/lueaxx/calandria> — Apache 2.0 |
 | README con cómo levantarlo y qué credenciales necesita | `README.md` |
-| Enviado por Devpost antes del 25/9 17:00 UTC *(prorrogado desde las 15:00)* | **pendiente** |
+| Enviado por Devpost antes del 25/9 17:00 UTC *(prorrogado desde las 15:00)* | ✅ enviado |
+| Página pública del proyecto | <https://lueaxx.github.io/calandria/> |
 
 ---
 
 ## Cómo verificar cualquier número de este repo
 
 ```bash
-pytest                              # 134 tests
+pytest                              # 143 tests
 python scripts/measure_accuracy.py  # precisión contra transcripción de referencia
 python scripts/loadtest.py --stages 100 --viewers 400
 docker compose --profile demo up demo-offline   # sin credenciales
