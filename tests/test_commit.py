@@ -541,3 +541,58 @@ def test_tidy_spacing_leaves_numbers_and_ellipses_alone():
 def test_tidy_spacing_changes_nothing_when_spacing_is_already_right():
     good = "Ya esta. Bien separado. Sin tocar."
     assert tidy_spacing(good) == good
+
+
+def test_a_still_sentence_is_released_without_a_new_hypothesis():
+    """The release rules are written in time, so something must keep time.
+
+    Every rule in the committer is phrased as "once the text has gone N
+    seconds untouched", but offer() only runs when the model sends text. A
+    model that falls quiet mid-sentence -- fifteen seconds, seen live -- left
+    nobody to notice the sentence had come due, and the caption sat frozen on
+    screen. tick() asks the question again with no new answer.
+    """
+    c = SentenceCommitter(stable_seconds=0.7)
+    settled, tail = c.offer("kind of reasoning and tool calls", now=100.0)
+    assert not settled          # too soon: the clock has only just started
+    assert tail
+
+    # No new hypothesis arrives. Without a beat this text stays on screen
+    # forever, which is exactly the bug.
+    settled, tail = c.tick(now=100.5)
+    assert not settled          # still inside the quiet window
+
+    settled, tail = c.tick(now=103.0)
+    assert settled == "kind of reasoning and tool calls"
+
+
+def test_ticking_does_not_restart_the_clock_it_is_reading():
+    """Re-offering identical text must not count as the text changing.
+
+    If it did, a beat every 100 ms would reset the stability timer on every
+    beat and nothing would ever be released -- a livelock that looks exactly
+    like the bug it was added to fix.
+    """
+    c = SentenceCommitter(stable_seconds=0.7)
+    c.offer("una frase sin final claro", now=50.0)
+
+    released = []
+    for i in range(20):                     # two seconds of 100 ms beats
+        settled, _ = c.tick(now=50.0 + i * 0.1)
+        if settled:
+            released.append((round(50.0 + i * 0.1, 1), settled))
+
+    # Exactly once: released when it came due, and not re-released on every
+    # beat afterwards.
+    assert [t for _, t in released] == ["una frase sin final claro"]
+
+    # And at the right moment. Unpunctuated text waits stable_seconds doubled,
+    # because silence is weaker evidence that a thought is finished than a full
+    # stop is, so 0.7 * 2 = 1.4 s after the text last changed.
+    when = released[0][0]
+    assert 51.4 <= when <= 51.5, f"released at {when}, expected about 51.4"
+
+
+def test_ticking_before_any_hypothesis_does_nothing():
+    c = SentenceCommitter()
+    assert c.tick(now=10.0) == ("", "")

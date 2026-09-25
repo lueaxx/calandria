@@ -179,6 +179,24 @@ class _LiveSession:
         finally:
             self._flush_pending(None)
 
+    def tick(self) -> None:
+        """Give the committer a beat even when the model has sent nothing.
+
+        Driven from the audio loop, so it keeps time with the talk rather than
+        with the model's mood.
+        """
+        if self._committer is None:
+            return
+        settled, tail = self._committer.tick()
+        if not settled:
+            return  # nothing came due; do not re-push a tail already on screen
+        self._push(SttEvent(text=settled, is_final=True,
+                            audio_ts=self.audio_seconds, latency_ms=None))
+        if tail:
+            self._push(SttEvent(text=tail, is_final=False,
+                                audio_ts=self.audio_seconds,
+                                latency_ms=self._time_to_first_caption()))
+
     def _on_hypothesis(self, text: str) -> None:
         """Release whatever the running hypothesis has settled, show the rest.
 
@@ -410,6 +428,11 @@ class GeminiLiveBackend:
                 primary.feed(chunk)
                 if secondary is not None:
                     secondary.feed(chunk)
+                # Audio arrives every 100 ms whether or not the model is
+                # talking, which makes it the one clock in here that never
+                # stops. A sentence that has gone still is released on this
+                # beat rather than waiting for the model's next word.
+                primary.tick()
 
                 age = chunk.ts_end - session_started_ts
                 if secondary is None and (age >= self._rotate_after or primary.go_away):

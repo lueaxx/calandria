@@ -204,6 +204,25 @@ class SentenceCommitter:
             # grow without bound.
             self._released = self._released[-_MAX_UTTERANCE_WORDS:]
 
+    def tick(self, now: float | None = None) -> tuple[str, str]:
+        """Re-examine the held hypothesis without a new one arriving.
+
+        The release rules are written in terms of how long text has gone
+        untouched, but `offer` only runs when the model sends something. A model
+        that falls quiet mid-sentence -- ten or fifteen seconds at a time, seen
+        live -- leaves nobody to notice that the sentence it is holding has now
+        been still for far longer than required. The clock was there; nothing
+        read it, and the caption sat frozen on screen until the model happened
+        to speak again.
+
+        Re-offering the identical text is deliberate: `offer` only restarts the
+        clock when the text actually differs, so this asks the question again
+        without answering it.
+        """
+        if not self._last_text:
+            return "", ""
+        return self.offer(self._last_text, now)
+
     def offer(self, hypothesis: str, now: float | None = None) -> tuple[str, str]:
         """Take the running hypothesis; return (newly settled, still provisional).
 
