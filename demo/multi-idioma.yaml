@@ -26,6 +26,7 @@ sessions:
     source: { type: mic }
     source_language: es
     targets: [en, pt, fr, de, it]
+    autostart: false
 
   # Same source type: the capture page pushes a shared browser tab into this
   # one over the same /ws/ingest. Separate from 'micro' only because the

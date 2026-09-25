@@ -368,7 +368,18 @@ class GeminiLiveBackend:
         return s
 
     async def transcribe(self, frames: AsyncIterator[AudioChunk]) -> AsyncIterator[SttEvent]:
-        primary = self._new_session()
+        # The session opens on the first chunk, not here. A configured stage
+        # that nobody is talking on yet would otherwise hold a socket against
+        # the model to carry silence, and a conference configures every room it
+        # owns, not only the ones in session. Ten rooms with three talking meant
+        # seven live sessions transmitting nothing.
+        #
+        # That is a quota problem before it is a tidiness one: concurrent Live
+        # sessions are capped per project, each rotation briefly needs two, and
+        # running out closes them with 1008 "The operation was aborted" -- an
+        # error that names nothing you can act on and lands on whichever stage
+        # happens to be speaking.
+        primary: _LiveSession | None = None
         secondary: _LiveSession | None = None
         rotation_started_at: float | None = None  # audio ts when overlap began
         session_started_ts = 0.0
@@ -376,6 +387,9 @@ class GeminiLiveBackend:
 
         try:
             async for chunk in frames:
+                if primary is None:
+                    primary = self._new_session()
+                    session_started_ts = chunk.ts_start
                 if chunk.starts_new_stream:
                     # The source started over. Clearing what was shown is not
                     # enough on its own: the model's session continues across
@@ -435,7 +449,10 @@ class GeminiLiveBackend:
                 if primary.error is not None:
                     raise SttError(str(primary.error)) from primary.error
 
-            # Source exhausted: let the model finalise its tail.
+            # Source exhausted: let the model finalise its tail. A stage that
+            # never received audio has no session and so has no tail.
+            if primary is None:
+                return
             primary.inq.put_nowait(_SENTINEL)
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
@@ -449,7 +466,8 @@ class GeminiLiveBackend:
             if primary.error is not None:
                 raise SttError(str(primary.error)) from primary.error
         finally:
-            await primary.aclose()
+            if primary is not None:
+                await primary.aclose()
             if secondary is not None:
                 await secondary.aclose()
 
