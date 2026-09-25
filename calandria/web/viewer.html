@@ -22,6 +22,12 @@
   <span class="dot" id="dot" data-state="idle" role="status" aria-live="polite"
         title="Estado de la sesión"></span>
 
+  <!-- A stage that is configured but silent looks exactly like a stage that is
+       broken, and with several interchangeable stages the commonest mistake is
+       watching one while the audio goes to another. The answer is already in
+       /api/sessions; it just was never shown to the person who needed it. -->
+  <span class="idle-note" id="idleNote" role="status" aria-live="polite" hidden></span>
+
   <select id="session" aria-label="Sala"></select>
   <select id="lang" aria-label="Idioma"></select>
 
@@ -133,6 +139,8 @@ function connect() {
   utterance = null;
   pinned = true;
   current = { session, lang };
+  lastCaptionAt = Date.now();
+  $("idleNote").hidden = true;
 
   const wanted = lang === "both" ? sourceLang : lang;
   openSocket(wanted, lang === "both");
@@ -245,6 +253,33 @@ function chooseAutoTarget(seq) {
 
 function setState(s) { $("dot").dataset.state = s; }
 
+/* Tell a reader staring at an empty stage why it is empty.
+
+   Polls rather than pushes: this is a hint, not a caption, and it must never
+   compete with the caption socket for attention or bandwidth. Ten seconds is
+   slow enough to be free and fast enough to catch the mistake while the person
+   is still making it. */
+let lastCaptionAt = Date.now();
+async function checkForSilence() {
+  const note = $("idleNote");
+  try {
+    const { sessions } = await (await fetch("/api/sessions")).json();
+    const mine = sessions.find((s) => s.session_id === current.session);
+    const quiet = Date.now() - lastCaptionAt > 12000;
+    if (!mine || !quiet || mine.audio_seconds > 0) { note.hidden = true; return; }
+    // Only worth saying if the audio is demonstrably somewhere else. A whole
+    // server at rest before an event starts is not a mistake to report.
+    const elsewhere = sessions.filter((s) => s.audio_seconds > 0);
+    if (!elsewhere.length) { note.hidden = true; return; }
+    const names = elsewhere.map((s) => s.title || s.session_id).join(", ");
+    note.textContent = `Esta sala no está recibiendo audio. Hay audio en: ${names}`;
+    note.hidden = false;
+  } catch {
+    note.hidden = true;   // the hint must never become the problem
+  }
+}
+setInterval(checkForSilence, 10000);
+
 /* The model returns the whole running hypothesis on every interim update, not
    just the new words. Rendered as one paragraph that would mean re-wrapping
    everything the reader is in the middle of, several times a second -- which is
@@ -292,6 +327,7 @@ function paint(parts, { final, origin }) {
 
 function onMessage(c) {
   if (!c.text) return;
+  lastCaptionAt = Date.now();
   if (!c.is_final) {
     paint(sentences(c.text), { final: false, origin: c.origin });
     toEnd();
@@ -306,6 +342,7 @@ function onMessage(c) {
 
 function onPairMessage(c, side) {
   if (!c.text) return;
+  lastCaptionAt = Date.now();
   // The original column paints interim text as it is spoken. Waiting for the
   // sentence to close, as this used to, left the stacked view blank through
   // every sentence and reading seconds behind the single-language view beside

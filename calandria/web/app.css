@@ -230,3 +230,16 @@ button:hover, select:hover { border-color: var(--dun); }
   .mark span { display: none; }
   select { max-width: 7.5rem; }
 }
+
+/* Said quietly: it is a hint about a mistake, not an error about a fault. */
+.idle-note {
+  font-size: 0.82rem;
+  opacity: 0.75;
+  padding: 0.2em 0.7em;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 44ch;
+}
