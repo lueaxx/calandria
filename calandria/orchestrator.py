@@ -43,7 +43,7 @@ from .stt.chunked import ChunkedBackend
 from .stt.commit import tidy_spacing
 from .stt.fake import FakeBackend
 from .stt.gemini import GeminiLiveBackend
-from .translate.gemini import GeminiTranslator, TranslationFanout
+from .translate.gemini import AUTO, GeminiTranslator, TranslationFanout
 
 log = logging.getLogger("calandria")
 
@@ -193,7 +193,14 @@ class SessionWorker:
             return FakeBackend(script)
 
         vocab = self.glossary.stt_vocabulary()
-        lang = self.cfg.source_language if self.app.stt.language_hint else None
+        # 'auto' means we do not know, and a hint we cannot stand behind is
+        # worse than none: the model reconciles the label against what it
+        # actually hears. Passing None lets it detect per utterance, which costs
+        # a beat of lock-on at the start of a talk and buys a stage that
+        # survives a bilingual panel or a question from the floor.
+        lang = self.cfg.source_language
+        if lang == AUTO or not self.app.stt.language_hint:
+            lang = None
         if degraded:
             return ChunkedBackend(
                 self.client,

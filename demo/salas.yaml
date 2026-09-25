@@ -1,0 +1,48 @@
+# Varias salas genericas.
+#
+# Ninguna declara que idioma se habla en ella. El modelo lo detecta por
+# enunciado, asi que una mesa bilingue o una pregunta del publico se traducen
+# en vez de romperse, y la misma configuracion sirve para un evento en
+# cualquier idioma sin editarla.
+#
+# Cada sala traduce a los seis idiomas; la audiencia elige el suyo en el visor.
+# El costo por idioma extra es una traduccion de texto, no otra decodificacion
+# de audio, que es de donde sale que esto escale.
+
+stt:
+  provider: aistudio          # el modelo de streaming vive aca
+  backend: gemini
+  mode: SMART
+  rotate_after_seconds: 75    # una sesion se deteriora con la edad; ver README
+  overlap_seconds: 3
+
+translation:
+  provider: vertex
+  model: gemini-3.5-flash-lite
+
+glossary: ./glossary.yaml
+
+sessions:
+  - id: sala-1
+    title: "Sala 1"
+    source: { type: mic }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  - id: sala-2
+    title: "Sala 2"
+    source: { type: mic }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  - id: sala-3
+    title: "Sala 3"
+    source: { type: mic }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]
+
+  - id: sala-4
+    title: "Sala 4"
+    source: { type: mic }
+    source_language: auto
+    targets: [es, en, pt, fr, de, it]

@@ -47,7 +47,11 @@ class SessionConfig(BaseModel):
     def _defaults(self):
         self.title = self.title or self.id
         # Translating a language into itself is a no-op that still costs money.
-        self.targets = [t for t in self.targets if t != self.source_language]
+        # Unless the source is unknown: then there is no language to compare a
+        # target against, and dropping one would silently remove an audience's
+        # only option from a stage that might never speak that language anyway.
+        if self.source_language != "auto":
+            self.targets = [t for t in self.targets if t != self.source_language]
         return self
 
 

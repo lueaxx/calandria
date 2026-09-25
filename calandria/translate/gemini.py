@@ -47,6 +47,12 @@ LANGUAGE_NAMES = {
 }
 
 
+# A stage that does not declare what language it hears. The model detects it
+# per line, so a bilingual panel or a question from the floor is translated
+# rather than mangled.
+AUTO = "auto"
+
+
 def language_name(code: str) -> str:
     return LANGUAGE_NAMES.get(code, code)
 
@@ -54,6 +60,29 @@ def language_name(code: str) -> str:
 SYSTEM_PROMPT = """You produce live subtitles for a technical conference talk.
 
 Translate the LINE from {source} into {target}.
+
+Rules:
+- Output ONLY the translated line. No quotes, no notes, no alternatives.
+- Preserve meaning exactly. Never add, omit, explain or summarise.
+- Keep it tight enough to read on screen while the speaker keeps talking.
+- Keep code identifiers, command names, product names and acronyms verbatim.
+- If the line is a fragment, translate the fragment. Do not complete it.
+{glossary}"""
+
+# A stage set to source_language: auto does not tell the model what it is
+# hearing, because nobody told us either. Naming a source that might be wrong is
+# worse than naming none: the model tries to reconcile the label with the audio.
+# A room can also change language mid-session -- a bilingual panel, a question
+# from the floor -- and a fixed source turns that into a mistranslation rather
+# than a translation.
+SYSTEM_PROMPT_AUTO = """You produce live subtitles for a technical conference talk.
+
+The LINE may be in any language, and the language may change between lines.
+Translate it into {target}.
+
+If the LINE is already in {target}, repeat it unchanged rather than paraphrasing
+it: the audience chose this language and a rewrite reads as a transcription
+error.
 
 Rules:
 - Output ONLY the translated line. No quotes, no notes, no alternatives.
@@ -87,12 +116,18 @@ class GeminiTranslator:
         self._on_usage = on_usage
 
         glossary_block = f"\nGlossary:\n{glossary_rules}" if glossary_rules else ""
-        self._config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT.format(
+        if source_language == AUTO:
+            instruction = SYSTEM_PROMPT_AUTO.format(
+                target=language_name(target_language), glossary=glossary_block,
+            )
+        else:
+            instruction = SYSTEM_PROMPT.format(
                 source=language_name(source_language),
                 target=language_name(target_language),
                 glossary=glossary_block,
-            ),
+            )
+        self._config = types.GenerateContentConfig(
+            system_instruction=instruction,
             temperature=temperature,
             # Subtitles are short. Capping output keeps a confused model from
             # burning latency on a paragraph nobody will read in time.
